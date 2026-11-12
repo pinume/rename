@@ -59,9 +59,25 @@ class OrganizeTests(unittest.TestCase):
             self.folder(name)
         for operation in (classify, rename_by_number):
             report = operation(self.root, self.excel)
-            self.assertEqual(report.success, 0)
-            self.assertEqual(len(report.skipped), 4)
+            self.assertEqual(report.success, 0 if operation is classify else 1)
+            self.assertEqual(len(report.skipped), 4 if operation is classify else 3)
         self.assertEqual(len(list(self.root.iterdir())), 4)
+        self.assertTrue((self.root / "conflict（序号异常）/发票.jpg").is_file())
+
+    def test_multiple_numbers_are_marked_and_existing_marks_are_preserved(self):
+        self.workbook([["T1", "品牌", "1-01"], ["T1", "品牌", "1-02"],
+                       ["T2", "品牌", "2-01"], ["T2", "品牌", "2-01"]])
+        self.folder("品牌/T1")
+        self.folder("品牌/T2")
+        report = rename_by_number(self.root, self.excel)
+        self.assertEqual(report.success, 2)
+        self.assertEqual((self.root / "品牌/T1（序号异常）/发票.jpg").read_bytes(), b"invoice")
+        self.assertTrue((self.root / "品牌/2-01").is_dir())
+        self.folder("品牌/T1")
+        report = rename_by_number(self.root, self.excel)
+        self.assertEqual(report.success, 0)
+        self.assertTrue((self.root / "品牌/T1").is_dir())
+        self.assertTrue(any("目标已存在" in message for message in report.skipped))
 
     def test_duplicate_targets_and_existing_targets_are_not_merged(self):
         self.workbook([["T1", "品牌", "1-01"], ["T2", "品牌", "1-01"]])
@@ -108,6 +124,34 @@ class OrganizeTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             summarize(self.root / "不存在")
         self.assertTrue((self.root / "T1").is_dir())
+
+    def test_classify_finds_headers_in_arbitrary_sheets_and_rows(self):
+        self.excel = self.base / "任意文件名.xlsx"
+        book = Workbook()
+        book.active.title = "说明"
+        book.active.append(["不含台账"])
+        sheet = book.create_sheet("销售记录")
+        sheet.append(["标题"])
+        sheet.append([])
+        sheet.append([" 品牌品类 ", "其他", "交易参考号"])
+        sheet.append(["品牌甲", "备注", "T1"])
+        sheet = book.create_sheet("补充资料")
+        sheet.append(["交易参考号", "品牌品类"])
+        sheet.append(["T2", "品牌乙"])
+        sheet.append(["T3", "品牌甲"])
+        sheet = book.create_sheet("冲突记录")
+        sheet.append(["品牌品类", "交易参考号"])
+        sheet.append(["品牌乙", "T3"])
+        book.save(self.excel)
+        book.close()
+        for name in ("T1", "T2", "T3"):
+            self.folder(name)
+        report = classify(self.root, self.excel)
+        self.assertEqual(report.success, 2)
+        self.assertEqual(len(report.skipped), 1)
+        self.assertTrue((self.root / "品牌甲/T1/发票.jpg").is_file())
+        self.assertTrue((self.root / "品牌乙/T2/发票.jpg").is_file())
+        self.assertTrue((self.root / "T3/发票.jpg").is_file())
 
     def test_symlinks_are_not_followed_or_used_as_output_targets(self):
         self.workbook([["T1", "品牌", "1-01"]])

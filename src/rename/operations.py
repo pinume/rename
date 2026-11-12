@@ -25,20 +25,31 @@ def _directory(path: Path) -> Path:
 def _mapping(excel: Path, target: str) -> dict[str, set[str]]:
     workbook = load_workbook(excel, read_only=True, data_only=True)
     try:
-        if "家电台账" not in workbook.sheetnames:
-            raise ValueError("Excel 缺少“家电台账”工作表")
-        rows = workbook["家电台账"].iter_rows(min_row=2, values_only=True)
-        headers = [str(v).strip() if v is not None else "" for v in next(rows, ())]
-        for name in ("交易参考号", target):
-            if headers.count(name) != 1:
-                raise ValueError(f"Excel 第 2 行必须包含唯一的“{name}”列")
-        reference_index, target_index = headers.index("交易参考号"), headers.index(target)
         result = defaultdict(set)
-        for row in rows:
-            reference = row[reference_index]
-            value = row[target_index]
-            if reference is not None and str(reference).strip():
-                result[str(reference).strip()].add(str(value).strip() if value is not None else "")
+        automatic = target == "品牌品类"
+        if not automatic and "家电台账" not in workbook.sheetnames:
+            raise ValueError("Excel 缺少“家电台账”工作表")
+        sheets = workbook.worksheets if automatic else [workbook["家电台账"]]
+        found = False
+        for sheet in sheets:
+            rows = sheet.iter_rows(min_row=1 if automatic else 2, values_only=True)
+            for row in rows:
+                headers = [str(v).strip() if v is not None else "" for v in row]
+                if all(headers.count(name) == 1 for name in ("交易参考号", target)):
+                    found = True
+                    break
+                if not automatic:
+                    raise ValueError(f"Excel 第 2 行必须包含唯一的“交易参考号”和“{target}”列")
+            else:
+                continue
+            reference_index, target_index = headers.index("交易参考号"), headers.index(target)
+            for row in rows:
+                reference = row[reference_index]
+                value = row[target_index]
+                if reference is not None and str(reference).strip():
+                    result[str(reference).strip()].add(str(value).strip() if value is not None else "")
+        if not found:
+            raise ValueError(f"Excel 未找到同时包含唯一的“交易参考号”和“{target}”列的表头")
         return dict(result)
     finally:
         workbook.close()
@@ -107,6 +118,8 @@ def _organize(folders: list[Path], mapping: dict[str, set[str]], root: Path,
         values = mapping.get(source.name)
         if not values:
             report.skipped.append(f"{source}：未匹配交易参考号")
+        elif not classify and len(values - {""}) > 1:
+            plans.append((source, source.with_name(f"{source.name}（序号异常）")))
         elif len(values) != 1 or "" in values:
             report.skipped.append(f"{source}：目标字段为空或存在不同目标值")
         else:
