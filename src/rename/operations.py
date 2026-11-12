@@ -1,6 +1,7 @@
 """资料整理操作；所有移动都保留原目录内的文件。"""
 
 import os
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,26 +27,21 @@ def _mapping(excel: Path, target: str) -> dict[str, set[str]]:
     workbook = load_workbook(excel, read_only=True, data_only=True)
     try:
         result = defaultdict(set)
-        automatic = target == "品牌品类"
-        if not automatic and "家电台账" not in workbook.sheetnames:
-            raise ValueError("Excel 缺少“家电台账”工作表")
-        sheets = workbook.worksheets if automatic else [workbook["家电台账"]]
         found = False
-        for sheet in sheets:
-            rows = sheet.iter_rows(min_row=1 if automatic else 2, values_only=True)
+        for sheet in workbook.worksheets:
+            rows = sheet.iter_rows(values_only=True)
             for row in rows:
                 headers = [str(v).strip() if v is not None else "" for v in row]
                 if all(headers.count(name) == 1 for name in ("交易参考号", target)):
                     found = True
                     break
-                if not automatic:
-                    raise ValueError(f"Excel 第 2 行必须包含唯一的“交易参考号”和“{target}”列")
             else:
                 continue
             reference_index, target_index = headers.index("交易参考号"), headers.index(target)
             for row in rows:
-                reference = row[reference_index]
-                value = row[target_index]
+                # 缺少表格范围信息时，行尾空单元格不会出现在行中。
+                reference, value = (row[i] if i < len(row) else None
+                                    for i in (reference_index, target_index))
                 if reference is not None and str(reference).strip():
                     result[str(reference).strip()].add(str(value).strip() if value is not None else "")
         if not found:
@@ -56,7 +52,7 @@ def _mapping(excel: Path, target: str) -> dict[str, set[str]]:
 
 
 def _target_name(name: str) -> bool:
-    return bool(name) and name not in {".", ".."} and not any(c in name for c in "/\\\0")
+    return bool(name) and name not in {".", ".."} and not any(c in name for c in "/\\\0:")
 
 
 def _walk(root: Path, exclude_summary: bool = False):
@@ -94,11 +90,15 @@ def _move(plans: list[tuple[Path, Path]], report: Report) -> Report:
     return report
 
 
-def classify(root: Path, excel: Path) -> Report:
+def classify(root: Path, excel: Path, column: str = "品牌品类") -> Report:
     root = _directory(root)
-    mapping = _mapping(excel, "品牌品类")
+    mapping = _mapping(excel, column)
     folders = sorted(p for p in root.iterdir() if p.is_dir() and not p.is_symlink())
     return _organize(folders, mapping, root, classify=True)
+
+
+def classify_by_batch(root: Path, excel: Path) -> Report:
+    return classify(root, excel, "拨付批次")
 
 
 def rename_by_number(root: Path, excel: Path) -> Report:
@@ -138,6 +138,38 @@ def summarize(root: Path) -> Report:
              for current, dirs, files in _walk(root, exclude_summary=True)
              if current != root and not dirs and files]
     return _move(plans, Report())
+
+
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif",
+                   ".tif", ".tiff", ".heic", ".heif", ".avif"}
+_KEEP_STEMS = {"二合一照片", "发票", "IMEI", "SN图片"}
+_POS_DONE = re.compile(r"POS小票(_([2-9]|[1-9]\d+))?")
+
+
+def rename_pos_images(root: Path) -> Report:
+    root = _directory(root)
+    report = Report()
+    plans = []
+    for current, _, files in _walk(root):
+        # 按不区分大小写记录占用，避免在大小写不敏感的文件系统上撞名。
+        occupied = {name.casefold() for name in os.listdir(current)}
+        for name in files:
+            source = current / name
+            # 隐藏文件（如外接盘上的 ._ 辅助文件）不是真实图片。
+            if (name.startswith(".") or source.suffix.lower() not in _IMAGE_SUFFIXES
+                    or source.stem in _KEEP_STEMS
+                    or _POS_DONE.fullmatch(source.stem)):
+                continue
+            if source.is_symlink():
+                report.skipped.append(f"{source}：符号链接")
+                continue
+            number = 1
+            while (target := f"POS小票{f'_{number}' if number > 1 else ''}{source.suffix}"
+                   ).casefold() in occupied:
+                number += 1
+            occupied.add(target.casefold())
+            plans.append((source, current / target))
+    return _move(plans, report)
 
 
 def export_markdown(root: Path, *, overwrite: bool = False) -> Path:
