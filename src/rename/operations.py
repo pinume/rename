@@ -1,5 +1,6 @@
 """资料整理操作；所有移动都保留原目录内的文件。"""
 
+import csv
 import os
 import re
 from collections import Counter, defaultdict
@@ -199,4 +200,18 @@ def export_markdown(root: Path, *, overwrite: bool = False) -> Path:
         fence += "`"
     with output.open("w" if overwrite else "x", encoding="utf-8") as stream:
         stream.write(f"{fence}text\n{content}\n{fence}\n")
+    return output
+
+
+def export_folder_names(root: Path, *, overwrite: bool = False) -> Path:
+    root = _directory(root)
+    output = root / "子文件夹名称.csv"
+    if output.is_symlink():
+        raise ValueError("子文件夹名称.csv 是符号链接，不能覆盖")
+    names = sorted(p.name for p in root.iterdir() if p.is_dir() and not p.is_symlink())
+    # utf-8-sig 让 Excel 正确识别中文；newline="" 交给 csv 处理名称中的换行。
+    with output.open("w" if overwrite else "x", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["文件夹名称"])
+        writer.writerows([name] for name in names)
     return output

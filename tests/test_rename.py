@@ -1,3 +1,4 @@
+import csv
 import datetime
 import re
 import tempfile
@@ -9,7 +10,7 @@ from unittest.mock import patch
 from openpyxl import Workbook
 
 from rename import main
-from rename.operations import (classify, classify_by_batch, export_markdown,
+from rename.operations import (classify, classify_by_batch, export_folder_names, export_markdown,
                                rename_by_number, rename_pos_images, summarize)
 
 
@@ -119,6 +120,62 @@ class OrganizeTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             export_markdown(self.root)
         self.assertEqual(export_markdown(self.root, overwrite=True).read_text(), expected)
+
+    def test_folder_names_csv_lists_first_level_folders_only(self):
+        names = ["乙 品牌", "a,b", 'say "hi"', "多\n行", ".隐藏", "甲"]
+        for name in names:
+            (self.root / name / "深层").mkdir(parents=True)
+        (self.root / "普通.txt").write_text("file")
+        outside = self.base / "外部"
+        outside.mkdir()
+        (self.root / "链接").symlink_to(outside, target_is_directory=True)
+        output = export_folder_names(self.root)
+        self.assertEqual(output, self.root.resolve() / "子文件夹名称.csv")
+        self.assertTrue(output.read_bytes().startswith(b"\xef\xbb\xbf"))
+        with output.open(encoding="utf-8-sig", newline="") as stream:
+            rows = list(csv.reader(stream))
+        self.assertEqual(rows, [["文件夹名称"]] + [[name] for name in sorted(names)])
+        original = output.read_bytes()
+        with self.assertRaises(FileExistsError):
+            export_folder_names(self.root)
+        self.assertEqual(output.read_bytes(), original)
+        (self.root / "新增").mkdir()
+        export_folder_names(self.root, overwrite=True)
+        with output.open(encoding="utf-8-sig", newline="") as stream:
+            self.assertIn(["新增"], list(csv.reader(stream)))
+
+    def test_folder_names_csv_empty_symlink_output_and_invalid_root(self):
+        output = export_folder_names(self.root)
+        self.assertEqual(output.read_bytes().decode("utf-8-sig"), "文件夹名称\r\n")
+        output.unlink()
+        sentinel = self.base / "保留.csv"
+        sentinel.write_text("保留")
+        output.symlink_to(sentinel)
+        with self.assertRaises(ValueError):
+            export_folder_names(self.root, overwrite=True)
+        self.assertEqual(sentinel.read_text(), "保留")
+        with self.assertRaises(FileNotFoundError):
+            export_folder_names(self.root / "不存在")
+        with self.assertRaises(ValueError):
+            export_folder_names(sentinel)
+
+    def test_cli_export_folder_names_confirm_and_cancel(self):
+        (self.root / "T1").mkdir()
+        output = self.root / "子文件夹名称.csv"
+        with patch("builtins.input", side_effect=["7", str(self.root), "0"]), patch("builtins.print"):
+            main()
+        self.assertEqual(output.read_bytes().decode("utf-8-sig"), "文件夹名称\r\nT1\r\n")
+        (self.root / "T2").mkdir()
+        with patch("builtins.input", side_effect=["7", str(self.root), "n", "0"]), \
+                patch("builtins.print") as printed:
+            main()
+        printed.assert_any_call("已取消导出。")
+        self.assertNotIn("T2", output.read_text(encoding="utf-8-sig"))
+        with patch("builtins.input", side_effect=["7", str(self.root), " Y ", "0"]), \
+                patch("builtins.print") as printed:
+            main()
+        self.assertIn("T2", output.read_text(encoding="utf-8-sig"))
+        self.assertTrue(any("已保存" in str(call) for call in printed.call_args_list))
 
     def test_missing_headers_and_invalid_root_do_not_move_files(self):
         self.folder("T1")
