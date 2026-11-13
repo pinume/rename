@@ -1,13 +1,8 @@
 import csv
-import datetime
-import re
 import tempfile
-import zipfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-
-from openpyxl import Workbook
 
 from rename import main
 from rename.operations import (classify, classify_by_batch, export_folder_names,
@@ -21,18 +16,14 @@ class OrganizeTests(unittest.TestCase):
         self.base = Path(self.temp.name)
         self.root = self.base / "资料"
         self.root.mkdir()
-        self.excel = self.base / "台账.xlsx"
+        self.csv_path = self.base / "台账.csv"
 
-    def workbook(self, rows, headers=None):
-        book = Workbook()
-        sheet = book.active
-        sheet.title = "家电台账"
-        sheet.append(["标题"])
-        sheet.append(headers or ["交易参考号", "品牌品类", "序号"])
-        for row in rows:
-            sheet.append(row)
-        book.save(self.excel)
-        book.close()
+    def write_csv(self, rows, headers=None, encoding="utf-8-sig"):
+        with self.csv_path.open("w", encoding=encoding, newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["标题"])
+            writer.writerow(headers or ["交易参考号", "品牌品类", "序号"])
+            writer.writerows(rows)
 
     def folder(self, name):
         folder = self.root / name
@@ -42,62 +33,62 @@ class OrganizeTests(unittest.TestCase):
         return folder
 
     def test_classify_summary_and_recursive_rename_preserve_contents(self):
-        self.workbook([["T1", "海尔电冰箱", "1-01"], ["T2", "海尔电冰箱", "1-02"]])
+        self.write_csv([["T1", "海尔电冰箱", "1-01"], ["T2", "海尔电冰箱", "1-02"]])
         self.folder("T1")
         self.folder("T2")
         original = {p.relative_to(self.root).as_posix(): p.read_bytes()
                     for p in self.root.rglob("*") if p.is_file()}
-        self.assertEqual(classify(self.root, self.excel).success, 2)
+        self.assertEqual(classify(self.root, self.csv_path).success, 2)
         self.assertEqual(summarize(self.root).success, 2)
         self.assertTrue((self.root / "海尔电冰箱").is_dir())
         self.assertEqual(summarize(self.root).success, 0)
-        self.assertEqual(rename_by_number(self.root, self.excel).success, 2)
+        self.assertEqual(rename_by_number(self.root, self.csv_path).success, 2)
         for path, data in original.items():
             reference, filename = path.split("/")
             number = {"T1": "1-01", "T2": "1-02"}[reference]
             self.assertEqual((self.root / "汇总" / number / filename).read_bytes(), data)
 
     def test_unmatched_empty_conflicting_and_unsafe_values_are_preserved(self):
-        self.workbook([["empty", None, ""], ["conflict", "甲", "1"],
+        self.write_csv([["empty", None, ""], ["conflict", "甲", "1"],
                        ["conflict", "乙", "2"], ["unsafe", "../外部", "../外部"]])
         for name in ("empty", "conflict", "unsafe", "missing"):
             self.folder(name)
         for operation in (classify, rename_by_number):
-            report = operation(self.root, self.excel)
+            report = operation(self.root, self.csv_path)
             self.assertEqual(report.success, 0 if operation is classify else 1)
             self.assertEqual(len(report.skipped), 4 if operation is classify else 3)
         self.assertEqual(len(list(self.root.iterdir())), 4)
         self.assertTrue((self.root / "conflict（序号异常）/发票.jpg").is_file())
 
     def test_multiple_numbers_are_marked_and_existing_marks_are_preserved(self):
-        self.workbook([["T1", "品牌", "1-01"], ["T1", "品牌", "1-02"],
+        self.write_csv([["T1", "品牌", "1-01"], ["T1", "品牌", "1-02"],
                        ["T2", "品牌", "2-01"], ["T2", "品牌", "2-01"]])
         self.folder("品牌/T1")
         self.folder("品牌/T2")
-        report = rename_by_number(self.root, self.excel)
+        report = rename_by_number(self.root, self.csv_path)
         self.assertEqual(report.success, 2)
         self.assertEqual((self.root / "品牌/T1（序号异常）/发票.jpg").read_bytes(), b"invoice")
         self.assertTrue((self.root / "品牌/2-01").is_dir())
         self.folder("品牌/T1")
-        report = rename_by_number(self.root, self.excel)
+        report = rename_by_number(self.root, self.csv_path)
         self.assertEqual(report.success, 0)
         self.assertTrue((self.root / "品牌/T1").is_dir())
         self.assertTrue(any("目标已存在" in message for message in report.skipped))
 
     def test_duplicate_targets_and_existing_targets_are_not_merged(self):
-        self.workbook([["T1", "品牌", "1-01"], ["T2", "品牌", "1-01"]])
+        self.write_csv([["T1", "品牌", "1-01"], ["T2", "品牌", "1-01"]])
         self.folder("T1")
         self.folder("T2")
-        report = rename_by_number(self.root, self.excel)
+        report = rename_by_number(self.root, self.csv_path)
         self.assertEqual(len(report.skipped), 2)
         self.assertEqual(report.success, 0)
-        self.workbook([["T1", "品牌", "1-01"]])
+        self.write_csv([["T1", "品牌", "1-01"]])
         self.folder("1-01")
-        report = rename_by_number(self.root, self.excel)
+        report = rename_by_number(self.root, self.csv_path)
         self.assertEqual(report.success, 0)
         self.assertEqual((self.root / "T1/发票.jpg").read_bytes(), b"invoice")
         self.folder("品牌/T1")
-        self.assertEqual(classify(self.root, self.excel).success, 0)
+        self.assertEqual(classify(self.root, self.csv_path).success, 0)
 
     def test_summary_skips_all_duplicate_leaf_names(self):
         self.folder("品牌甲/T1")
@@ -167,66 +158,37 @@ class OrganizeTests(unittest.TestCase):
 
     def test_missing_headers_and_invalid_root_do_not_move_files(self):
         self.folder("T1")
-        self.workbook([["T1"]], headers=["错误表头"])
+        self.write_csv([["T1"]], headers=["错误表头"])
         for operation in (classify, rename_by_number):
             with self.subTest(operation=operation.__name__), self.assertRaises(ValueError):
-                operation(self.root, self.excel)
+                operation(self.root, self.csv_path)
         with self.assertRaises(FileNotFoundError):
             summarize(self.root / "不存在")
         self.assertTrue((self.root / "T1").is_dir())
 
-    def test_classify_finds_headers_in_arbitrary_sheets_and_rows(self):
-        self.excel = self.base / "任意文件名.xlsx"
-        book = Workbook()
-        book.active.title = "说明"
-        book.active.append(["不含台账"])
-        sheet = book.create_sheet("销售记录")
-        sheet.append(["标题"])
-        sheet.append([])
-        sheet.append([" 品牌品类 ", "其他", "交易参考号"])
-        sheet.append(["品牌甲", "备注", "T1"])
-        sheet = book.create_sheet("补充资料")
-        sheet.append(["交易参考号", "品牌品类"])
-        sheet.append(["T2", "品牌乙"])
-        sheet.append(["T3", "品牌甲"])
-        sheet = book.create_sheet("冲突记录")
-        sheet.append(["品牌品类", "交易参考号"])
-        sheet.append(["品牌乙", "T3"])
-        book.save(self.excel)
-        book.close()
+    def test_classify_finds_headers_in_arbitrary_rows(self):
+        self.csv_path = self.base / "任意文件名.csv"
+        self.write_csv([[], [" 品牌品类 ", "其他", "交易参考号"], ["品牌甲", "备注", "T1"],
+                        ["品牌乙", "", "T2"], ["品牌甲", "", "T3"], ["品牌乙", "", "T3"]],
+                       headers=["不含台账"])
         for name in ("T1", "T2", "T3"):
             self.folder(name)
-        report = classify(self.root, self.excel)
+        report = classify(self.root, self.csv_path)
         self.assertEqual(report.success, 2)
         self.assertEqual(len(report.skipped), 1)
         self.assertTrue((self.root / "品牌甲/T1/发票.jpg").is_file())
         self.assertTrue((self.root / "品牌乙/T2/发票.jpg").is_file())
         self.assertTrue((self.root / "T3/发票.jpg").is_file())
 
-    def test_rename_finds_headers_in_arbitrary_file_sheets_and_rows(self):
-        self.excel = self.base / "任意子目录/任意文件名.xlsx"
-        self.excel.parent.mkdir()
-        book = Workbook()
-        book.active.title = "说明"
-        book.active.append(["不含台账"])
-        sheet = book.create_sheet("销售记录")
-        sheet.append(["标题"])
-        sheet.append([])
-        sheet.append([" 序号 ", "其他", "交易参考号"])
-        sheet.append(["1-01", "备注", "T1"])
-        sheet = book.create_sheet("补充资料")
-        sheet.append(["交易参考号", "序号"])
-        sheet.append(["T2", "1-02"])
-        sheet.append(["T1", "1-01"])
-        sheet.append(["T3", "1-03"])
-        sheet = book.create_sheet("冲突记录")
-        sheet.append(["序号", "交易参考号"])
-        sheet.append(["1-04", "T3"])
-        book.save(self.excel)
-        book.close()
+    def test_rename_finds_headers_in_arbitrary_file_and_rows(self):
+        self.csv_path = self.base / "任意子目录/任意文件名.csv"
+        self.csv_path.parent.mkdir()
+        self.write_csv([[], [" 序号 ", "其他", "交易参考号"], ["1-01", "备注", "T1"],
+                        ["1-02", "", "T2"], ["1-01", "", "T1"], ["1-03", "", "T3"],
+                        ["1-04", "", "T3"]], headers=["不含台账"])
         for name in ("T1", "T2", "T3"):
             self.folder(name)
-        report = rename_by_number(self.root, self.excel)
+        report = rename_by_number(self.root, self.csv_path)
         self.assertEqual(report.success, 3)
         self.assertEqual(report.failed, [])
         self.assertEqual(report.skipped, [])
@@ -237,27 +199,20 @@ class OrganizeTests(unittest.TestCase):
         self.folder("T1")
         for operation, target in ((classify, "品牌品类"), (rename_by_number, "序号")):
             with self.subTest(operation=operation.__name__):
-                self.workbook([["T1", "甲", "乙"]], headers=["交易参考号", target, target])
+                self.write_csv([["T1", "甲", "乙"]], headers=["交易参考号", target, target])
                 with self.assertRaises(ValueError):
-                    operation(self.root, self.excel)
+                    operation(self.root, self.csv_path)
                 self.assertTrue((self.root / "T1/发票.jpg").is_file())
 
     def test_classify_by_batch_groups_folders_and_reuses_existing_batches(self):
-        self.excel = self.base / "任意名称.xlsx"
-        book = Workbook()
-        book.active.title = "说明"
-        sheet = book.create_sheet("拨付")
-        sheet.append(["标题"])
-        sheet.append(["拨付批次", "其他", "交易参考号"])
-        for row in (["第一批", "", "T1"], ["第一批", "", "T2"], ["第一批", "", "T2"],
-                    ["第二批", "", "T3"], ["第一批", "", "T4"], ["第二批", "", "T4"],
-                    [None, "", "T5"], ["../外部", "", "T6"], ["第一批", "", "T7"]):
-            sheet.append(row)
-        book.save(self.excel)
-        book.close()
+        self.csv_path = self.base / "任意名称.csv"
+        self.write_csv([["第一批", "", "T1"], ["第一批", "", "T2"], ["第一批", "", "T2"],
+                        ["第二批", "", "T3"], ["第一批", "", "T4"], ["第二批", "", "T4"],
+                        ["", "", "T5"], ["../外部", "", "T6"], ["第一批", "", "T7"]],
+                       headers=["拨付批次", "其他", "交易参考号"])
         for name in ("T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "第一批/T7"):
             self.folder(name)
-        report = classify_by_batch(self.root, self.excel)
+        report = classify_by_batch(self.root, self.csv_path)
         self.assertEqual(report.success, 3)
         self.assertEqual(report.failed, [])
         self.assertEqual(len(report.skipped), 6)  # T4–T8 及已存在批次目录“第一批”本身
@@ -265,13 +220,13 @@ class OrganizeTests(unittest.TestCase):
                      "T4", "T5", "T6", "T7", "T8"):
             self.assertEqual((self.root / path / "发票.jpg").read_bytes(), b"invoice")
             self.assertEqual((self.root / path / "SN图片.png").read_bytes(), b"serial")
-        rerun = classify_by_batch(self.root, self.excel)
+        rerun = classify_by_batch(self.root, self.csv_path)
         self.assertEqual((rerun.success, rerun.failed), (0, []))
         self.assertFalse((self.root / "第一批/第一批").exists())
         self.assertTrue((self.root / "第一批/T1/发票.jpg").is_file())
 
     def test_classify_by_batch_continues_after_move_failure(self):
-        self.workbook([["T1", "第一批"], ["T2", "第一批"]], headers=["交易参考号", "拨付批次"])
+        self.write_csv([["T1", "第一批"], ["T2", "第一批"]], headers=["交易参考号", "拨付批次"])
         self.folder("T1")
         self.folder("T2")
         original = Path.rename
@@ -282,7 +237,7 @@ class OrganizeTests(unittest.TestCase):
             return original(source, target)
 
         with patch.object(Path, "rename", rename):
-            report = classify_by_batch(self.root, self.excel)
+            report = classify_by_batch(self.root, self.csv_path)
         self.assertEqual((report.success, len(report.failed)), (1, 1))
         self.assertEqual((self.root / "T1/发票.jpg").read_bytes(), b"invoice")
         self.assertEqual((self.root / "T1/SN图片.png").read_bytes(), b"serial")
@@ -344,44 +299,71 @@ class OrganizeTests(unittest.TestCase):
         self.assertEqual((self.root / "a.jpg").read_bytes(), b"a.jpg")
         self.assertEqual((self.root / "POS小票_2.jpg").read_bytes(), b"b.jpg")
 
-    def test_excel_without_dimension_reads_short_rows(self):
-        self.workbook([["T1", "品牌"]])
+    def test_short_rows_treat_missing_fields_as_empty(self):
+        self.write_csv([["T1", "品牌"]])
         self.folder("T1")
-        source = self.excel.with_name("原始.xlsx")
-        self.excel.rename(source)
-        with zipfile.ZipFile(source) as src, zipfile.ZipFile(self.excel, "w") as out:
-            for item in src.infolist():
-                data = src.read(item.filename)
-                if item.filename.endswith("sheet1.xml"):
-                    data = re.sub(rb"<dimension[^>]*/>", b"", data)
-                out.writestr(item, data)
-        report = rename_by_number(self.root, self.excel)
+        report = rename_by_number(self.root, self.csv_path)
         self.assertEqual((report.success, report.failed), (0, []))
         self.assertIn("目标字段为空", report.skipped[0])
-        self.assertEqual(classify(self.root, self.excel).success, 1)
+        self.assertEqual(classify(self.root, self.csv_path).success, 1)
 
-    def test_date_number_is_rejected_as_folder_name(self):
-        self.workbook([["T1", "品牌", datetime.datetime(2026, 1, 1)]])
+    def test_number_with_invalid_folder_characters_is_rejected(self):
+        self.write_csv([["T1", "品牌", "2026/1/1"]])
         self.folder("T1")
-        report = rename_by_number(self.root, self.excel)
+        report = rename_by_number(self.root, self.csv_path)
         self.assertEqual(report.success, 0)
         self.assertIn("目标名称无效", report.skipped[0])
         self.assertTrue((self.root / "T1/发票.jpg").is_file())
 
+    def test_csv_with_or_without_bom_keeps_text_and_quoted_fields(self):
+        for encoding in ("utf-8-sig", "utf-8"):
+            with self.subTest(encoding=encoding):
+                self.root = self.base / encoding
+                self.root.mkdir()
+                # 表头在首行，验证 BOM 不会混入首列列名。
+                with self.csv_path.open("w", encoding=encoding, newline="") as stream:
+                    csv.writer(stream).writerows([["交易参考号", "品牌品类", "序号"],
+                                                  ["T1", "品牌,甲", "001"],
+                                                  ["T2", "多\n行", "0002"]])
+                self.folder("T1")
+                self.folder("T2")
+                self.assertEqual(classify(self.root, self.csv_path).success, 2)
+                self.assertEqual(rename_by_number(self.root, self.csv_path).success, 2)
+                self.assertTrue((self.root / "品牌,甲/001/发票.jpg").is_file())
+                self.assertTrue((self.root / "多\n行/0002/发票.jpg").is_file())
+
+    def test_invalid_csv_does_not_move_files(self):
+        self.folder("T1")
+        for content, error in ((b"\xff\xfe\x00", ValueError),
+                               ("交易参考号,品牌品类,序号\r\n\"T1\"x,品牌,1\r\n".encode(), csv.Error),
+                               ("交易参考号,品牌品类,序号\r\n\"T1,品牌,1\r\n".encode(), csv.Error),
+                               (b"", ValueError)):
+            self.csv_path.write_bytes(content)
+            for operation in (classify, classify_by_batch, rename_by_number):
+                with self.subTest(content=content, operation=operation.__name__), \
+                        self.assertRaises(error):
+                    operation(self.root, self.csv_path)
+            with patch("builtins.input", side_effect=["1", str(self.root), str(self.csv_path), "y", "0"]), \
+                    patch("builtins.print") as output:
+                main()
+            self.assertTrue(any("无法执行" in str(call) for call in output.call_args_list))
+        self.assertEqual([p.name for p in self.root.iterdir()], ["T1"])
+        self.assertEqual((self.root / "T1/发票.jpg").read_bytes(), b"invoice")
+
     def test_symlinks_are_not_followed_or_used_as_output_targets(self):
-        self.workbook([["T1", "品牌", "1-01"]])
+        self.write_csv([["T1", "品牌", "1-01"]])
         self.folder("T1")
         outside = self.base / "外部"
         outside.mkdir()
         (self.root / "品牌").symlink_to(outside, target_is_directory=True)
-        self.assertEqual(classify(self.root, self.excel).success, 0)
+        self.assertEqual(classify(self.root, self.csv_path).success, 0)
         self.assertEqual(list(outside.iterdir()), [])
 
     def test_move_failure_is_reported(self):
-        self.workbook([["T1", "品牌", "1-01"]])
+        self.write_csv([["T1", "品牌", "1-01"]])
         self.folder("T1")
         with patch.object(Path, "rename", side_effect=PermissionError("无权限")):
-            report = classify(self.root, self.excel)
+            report = classify(self.root, self.csv_path)
         self.assertEqual(len(report.failed), 1)
         self.assertTrue((self.root / "T1").exists())
 
@@ -402,18 +384,18 @@ class OrganizeTests(unittest.TestCase):
             output.assert_any_call("\n已退出。")
 
     def test_cli_classify_rename_and_summary_are_separate_choices(self):
-        self.workbook([["T1", "品牌", "1-01"]])
+        self.write_csv([["T1", "品牌", "1-01"]])
         self.folder("T1")
-        answers = ["1", str(self.root), str(self.excel), "y",
-                   "3", str(self.root), str(self.excel), "y", "5", str(self.root), "y", "0"]
+        answers = ["1", str(self.root), str(self.csv_path), "y",
+                   "3", str(self.root), str(self.csv_path), "y", "5", str(self.root), "y", "0"]
         with patch("builtins.input", side_effect=answers), patch("builtins.print"):
             main()
         self.assertEqual((self.root / "汇总/1-01/发票.jpg").read_bytes(), b"invoice")
 
     def test_cli_classify_by_batch(self):
-        self.workbook([["T1", "第一批"]], headers=["交易参考号", "拨付批次"])
+        self.write_csv([["T1", "第一批"]], headers=["交易参考号", "拨付批次"])
         self.folder("T1")
-        with patch("builtins.input", side_effect=["2", str(self.root), str(self.excel), " Y ", "0"]), \
+        with patch("builtins.input", side_effect=["2", str(self.root), str(self.csv_path), " Y ", "0"]), \
                 patch("builtins.print") as output:
             main()
         self.assertEqual((self.root / "第一批/T1/发票.jpg").read_bytes(), b"invoice")
@@ -431,14 +413,6 @@ class OrganizeTests(unittest.TestCase):
             main()
         self.assertEqual((self.root / "POS小票.jpg").read_bytes(), b"pos")
         output.assert_any_call("成功：1，跳过：0，失败：0。")
-
-    def test_cli_corrupt_excel_returns_to_menu(self):
-        self.excel.write_bytes(b"not an xlsx file")
-        answers = ["1", str(self.root), str(self.excel), "y", "0"]
-        with patch("builtins.input", side_effect=answers), patch("builtins.print") as output:
-            main()
-        self.assertTrue(any("无法执行" in str(call) for call in output.call_args_list))
-
 
 if __name__ == "__main__":
     unittest.main()

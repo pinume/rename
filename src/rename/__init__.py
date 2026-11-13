@@ -1,8 +1,5 @@
+import csv
 from pathlib import Path
-from xml.etree.ElementTree import ParseError
-from zipfile import BadZipFile
-
-from openpyxl.utils.exceptions import InvalidFileException
 
 from .operations import (classify, classify_by_batch, export_folder_names, rename_by_number,
                          rename_pos_images, summarize)
@@ -39,7 +36,7 @@ def main() -> None:
             if choice not in _MENU:
                 print(f"无效选项，请输入 0–{len(_MENU)}。")
                 continue
-            _, operation, needs_excel = _MENU[choice]
+            _, operation, needs_csv = _MENU[choice]
             try:
                 root = _input_path("资料目录路径：")
                 if operation is export_folder_names:
@@ -53,18 +50,18 @@ def main() -> None:
                     output = export_folder_names(root, overwrite=overwrite)
                     print(f"成功：1，跳过：0，失败：0。已保存：{output}")
                     continue
-                excel = _input_path("Excel 文件路径：") if needs_excel else None
+                csv_path = _input_path("CSV 文件路径：") if needs_csv else None
                 # 以下操作直接改名或移动且不留记录，执行前确认路径。
                 if input(f"将直接修改 {root}，继续？[y/N]：").strip().lower() != "y":
                     print("已取消。")
                     continue
-                report = operation(root, excel) if needs_excel else operation(root)
+                report = operation(root, csv_path) if needs_csv else operation(root)
                 print(f"成功：{report.success}，跳过：{len(report.skipped)}，失败：{len(report.failed)}。")
                 for message in report.skipped:
                     print(f"跳过：{message}")
                 for message in report.failed:
                     print(f"失败：{message}")
-            except (OSError, ValueError, BadZipFile, InvalidFileException, KeyError, ParseError) as exc:
+            except (OSError, ValueError, csv.Error) as exc:
                 print(f"无法执行：{exc}")
     except (KeyboardInterrupt, EOFError):
         print("\n已退出。")

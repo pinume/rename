@@ -7,8 +7,6 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from openpyxl import load_workbook
-
 
 @dataclass
 class Report:
@@ -24,32 +22,24 @@ def _directory(path: Path) -> Path:
     return path
 
 
-def _mapping(excel: Path, target: str) -> dict[str, set[str]]:
-    workbook = load_workbook(excel, read_only=True, data_only=True)
-    try:
+def _mapping(csv_path: Path, target: str) -> dict[str, set[str]]:
+    with csv_path.open(encoding="utf-8-sig", newline="") as stream:
+        rows = csv.reader(stream, strict=True)
+        for row in rows:
+            headers = [v.strip() for v in row]
+            if all(headers.count(name) == 1 for name in ("交易参考号", target)):
+                break
+        else:
+            raise ValueError(f"CSV 未找到同时包含唯一的“交易参考号”和“{target}”列的表头")
+        reference_index, target_index = headers.index("交易参考号"), headers.index(target)
         result = defaultdict(set)
-        found = False
-        for sheet in workbook.worksheets:
-            rows = sheet.iter_rows(values_only=True)
-            for row in rows:
-                headers = [str(v).strip() if v is not None else "" for v in row]
-                if all(headers.count(name) == 1 for name in ("交易参考号", target)):
-                    found = True
-                    break
-            else:
-                continue
-            reference_index, target_index = headers.index("交易参考号"), headers.index(target)
-            for row in rows:
-                # 缺少表格范围信息时，行尾空单元格不会出现在行中。
-                reference, value = (row[i] if i < len(row) else None
-                                    for i in (reference_index, target_index))
-                if reference is not None and str(reference).strip():
-                    result[str(reference).strip()].add(str(value).strip() if value is not None else "")
-        if not found:
-            raise ValueError(f"Excel 未找到同时包含唯一的“交易参考号”和“{target}”列的表头")
-        return dict(result)
-    finally:
-        workbook.close()
+        for row in rows:
+            # 短行缺少的字段视为空值。
+            reference, value = (row[i].strip() if i < len(row) else ""
+                                for i in (reference_index, target_index))
+            if reference:
+                result[reference].add(value)
+    return dict(result)
 
 
 def _target_name(name: str) -> bool:
@@ -91,20 +81,20 @@ def _move(plans: list[tuple[Path, Path]], report: Report) -> Report:
     return report
 
 
-def classify(root: Path, excel: Path, column: str = "品牌品类") -> Report:
+def classify(root: Path, csv_path: Path, column: str = "品牌品类") -> Report:
     root = _directory(root)
-    mapping = _mapping(excel, column)
+    mapping = _mapping(csv_path, column)
     folders = sorted(p for p in root.iterdir() if p.is_dir() and not p.is_symlink())
     return _organize(folders, mapping, root, classify=True)
 
 
-def classify_by_batch(root: Path, excel: Path) -> Report:
-    return classify(root, excel, "拨付批次")
+def classify_by_batch(root: Path, csv_path: Path) -> Report:
+    return classify(root, csv_path, "拨付批次")
 
 
-def rename_by_number(root: Path, excel: Path) -> Report:
+def rename_by_number(root: Path, csv_path: Path) -> Report:
     root = _directory(root)
-    mapping = _mapping(excel, "序号")
+    mapping = _mapping(csv_path, "序号")
     folders = [current / d for current, dirs, _ in _walk(root) for d in dirs]
     # 先处理深层目录，避免上层重命名后使尚未处理的路径失效。
     folders.sort(key=lambda p: len(p.parts), reverse=True)
