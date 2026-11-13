@@ -154,6 +154,8 @@ def rename_pos_images(root: Path) -> Report:
     for current, _, files in _walk(root):
         # 按不区分大小写记录占用，避免在大小写不敏感的文件系统上撞名。
         occupied = {name.casefold() for name in os.listdir(current)}
+        # 每个扩展名从上次的编号继续找，较小编号已被占用，无需重复检查。
+        next_numbers = {}
         for name in files:
             source = current / name
             # 隐藏文件（如外接盘上的 ._ 辅助文件）不是真实图片。
@@ -164,10 +166,11 @@ def rename_pos_images(root: Path) -> Report:
             if source.is_symlink():
                 report.skipped.append(f"{source}：符号链接")
                 continue
-            number = 1
+            number = next_numbers.get(source.suffix.casefold(), 1)
             while (target := f"POS小票{f'_{number}' if number > 1 else ''}{source.suffix}"
                    ).casefold() in occupied:
                 number += 1
+            next_numbers[source.suffix.casefold()] = number
             occupied.add(target.casefold())
             plans.append((source, current / target))
     return _move(plans, report)
