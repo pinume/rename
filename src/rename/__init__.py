@@ -4,8 +4,8 @@ from zipfile import BadZipFile
 
 from openpyxl.utils.exceptions import InvalidFileException
 
-from .operations import (classify, classify_by_batch, export_folder_names, export_markdown,
-                         rename_by_number, rename_pos_images, summarize)
+from .operations import (classify, classify_by_batch, export_folder_names, rename_by_number,
+                         rename_pos_images, summarize)
 
 
 def _input_path(prompt: str) -> Path:
@@ -21,13 +21,11 @@ def _input_path(prompt: str) -> Path:
 _MENU = {
     "1": ("按品牌品类分类", classify, True),
     "2": ("按拨付批次分类", classify_by_batch, True),
-    "3": ("按 Excel 序号重命名子文件夹", rename_by_number, True),
-    "4": ("统一命名 POS 小票图片", rename_pos_images, False),
+    "3": ("重命名为序号", rename_by_number, True),
+    "4": ("pos小票fmt", rename_pos_images, False),
     "5": ("汇总资料子文件夹", summarize, False),
-    "6": ("导出 Markdown 目录结构", export_markdown, False),
-    "7": ("导出子文件夹名称 CSV", export_folder_names, False),
+    "6": ("导出文件夹名称", export_folder_names, False),
 }
-_EXPORTS = {export_markdown: "目录结构.md", export_folder_names: "子文件夹名称.csv"}
 
 
 def main() -> None:
@@ -44,16 +42,15 @@ def main() -> None:
             _, operation, needs_excel = _MENU[choice]
             try:
                 root = _input_path("资料目录路径：")
-                if operation in _EXPORTS:
-                    name = _EXPORTS[operation]
-                    output = root / name
+                if operation is export_folder_names:
+                    output = root / "子文件夹名称.csv"
                     overwrite = False
                     if output.exists() or output.is_symlink():
-                        overwrite = input(f"{name} 已存在，是否覆盖？[y/N]：").strip().lower() == "y"
+                        overwrite = input("子文件夹名称.csv 已存在，是否覆盖？[y/N]：").strip().lower() == "y"
                         if not overwrite:
                             print("已取消导出。")
                             continue
-                    output = operation(root, overwrite=overwrite)
+                    output = export_folder_names(root, overwrite=overwrite)
                     print(f"成功：1，跳过：0，失败：0。已保存：{output}")
                     continue
                 report = operation(root, _input_path("Excel 文件路径：")) if needs_excel else operation(root)

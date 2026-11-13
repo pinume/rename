@@ -10,7 +10,7 @@ from unittest.mock import patch
 from openpyxl import Workbook
 
 from rename import main
-from rename.operations import (classify, classify_by_batch, export_folder_names, export_markdown,
+from rename.operations import (classify, classify_by_batch, export_folder_names,
                                rename_by_number, rename_pos_images, summarize)
 
 
@@ -109,18 +109,6 @@ class OrganizeTests(unittest.TestCase):
         self.assertTrue((self.root / "品牌甲/T1").is_dir())
         self.assertFalse((self.root / "汇总/汇总").exists())
 
-    def test_markdown_filters_root_files_and_system_files_and_confirms_overwrite(self):
-        self.folder("品牌/T1")
-        (self.root / "下载清单.csv").write_text("root file")
-        (self.root / "品牌/T1/.DS_Store").write_bytes(b"metadata")
-        output = export_markdown(self.root)
-        expected = ("```text\n└── 品牌/\n    └── T1/\n"
-                    "        ├── SN图片.png\n        └── 发票.jpg\n```\n")
-        self.assertEqual(output.read_text(), expected)
-        with self.assertRaises(FileExistsError):
-            export_markdown(self.root)
-        self.assertEqual(export_markdown(self.root, overwrite=True).read_text(), expected)
-
     def test_folder_names_csv_lists_first_level_folders_only(self):
         names = ["乙 品牌", "a,b", 'say "hi"', "多\n行", ".隐藏", "甲"]
         for name in names:
@@ -162,16 +150,16 @@ class OrganizeTests(unittest.TestCase):
     def test_cli_export_folder_names_confirm_and_cancel(self):
         (self.root / "T1").mkdir()
         output = self.root / "子文件夹名称.csv"
-        with patch("builtins.input", side_effect=["7", str(self.root), "0"]), patch("builtins.print"):
+        with patch("builtins.input", side_effect=["6", str(self.root), "0"]), patch("builtins.print"):
             main()
         self.assertEqual(output.read_bytes().decode("utf-8-sig"), "文件夹名称\r\nT1\r\n")
         (self.root / "T2").mkdir()
-        with patch("builtins.input", side_effect=["7", str(self.root), "n", "0"]), \
+        with patch("builtins.input", side_effect=["6", str(self.root), "n", "0"]), \
                 patch("builtins.print") as printed:
             main()
         printed.assert_any_call("已取消导出。")
         self.assertNotIn("T2", output.read_text(encoding="utf-8-sig"))
-        with patch("builtins.input", side_effect=["7", str(self.root), " Y ", "0"]), \
+        with patch("builtins.input", side_effect=["6", str(self.root), " Y ", "0"]), \
                 patch("builtins.print") as printed:
             main()
         self.assertIn("T2", output.read_text(encoding="utf-8-sig"))
@@ -388,14 +376,6 @@ class OrganizeTests(unittest.TestCase):
         (self.root / "品牌").symlink_to(outside, target_is_directory=True)
         self.assertEqual(classify(self.root, self.excel).success, 0)
         self.assertEqual(list(outside.iterdir()), [])
-        export_markdown(self.root)
-        (self.root / "目录结构.md").unlink()
-        sentinel = outside / "保留.md"
-        sentinel.write_text("保留")
-        (self.root / "目录结构.md").symlink_to(sentinel)
-        with self.assertRaises(ValueError):
-            export_markdown(self.root, overwrite=True)
-        self.assertEqual(sentinel.read_text(), "保留")
 
     def test_move_failure_is_reported(self):
         self.workbook([["T1", "品牌", "1-01"]])
@@ -405,16 +385,11 @@ class OrganizeTests(unittest.TestCase):
         self.assertEqual(len(report.failed), 1)
         self.assertTrue((self.root / "T1").exists())
 
-    def test_cli_invalid_choice_export_overwrite_and_exit(self):
-        with patch("builtins.input", side_effect=["invalid", "6", str(self.root), "0"]), \
+    def test_cli_invalid_choice_and_exit(self):
+        with patch("builtins.input", side_effect=["invalid", "7", "0"]), \
                 patch("builtins.print") as output:
             main()
-        self.assertTrue((self.root / "目录结构.md").is_file())
-        self.assertTrue(any("无效选项" in str(call) for call in output.call_args_list))
-        with patch("builtins.input", side_effect=["6", str(self.root), "n", "0"]), \
-                patch("builtins.print") as output:
-            main()
-        output.assert_any_call("已取消导出。")
+        self.assertEqual(sum("无效选项，请输入 0–6" in str(call) for call in output.call_args_list), 2)
 
     def test_cli_error_and_interrupt_handling(self):
         with patch("builtins.input", side_effect=["5", "", "5", str(self.root / "不存在"), "0"]), \

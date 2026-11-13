@@ -173,36 +173,6 @@ def rename_pos_images(root: Path) -> Report:
     return _move(plans, report)
 
 
-def export_markdown(root: Path, *, overwrite: bool = False) -> Path:
-    root = _directory(root)
-    output = root / "目录结构.md"
-    if output.is_symlink():
-        raise ValueError("目录结构.md 是符号链接，不能覆盖")
-    lines = []
-
-    def tree(folder: Path, prefix: str = ""):
-        entries = sorted((p for p in folder.iterdir()
-                          if p.name != ".DS_Store" and not p.is_symlink()
-                          and (folder != root or p.is_dir())), key=lambda p: p.name)
-        for index, entry in enumerate(entries):
-            last = index == len(entries) - 1
-            name = entry.name.replace("\n", "\\n").replace("\r", "\\r")
-            lines.append(prefix + ("└── " if last else "├── ") + name
-                         + ("/" if entry.is_dir() else ""))
-            if entry.is_dir():
-                tree(entry, prefix + ("    " if last else "│   "))
-
-    tree(root)
-    # 文件名可能包含反引号，使用更长的围栏保持 Markdown 完整。
-    fence = "```"
-    content = "\n".join(lines)
-    while fence in content:
-        fence += "`"
-    with output.open("w" if overwrite else "x", encoding="utf-8") as stream:
-        stream.write(f"{fence}text\n{content}\n{fence}\n")
-    return output
-
-
 def export_folder_names(root: Path, *, overwrite: bool = False) -> Path:
     root = _directory(root)
     output = root / "子文件夹名称.csv"
