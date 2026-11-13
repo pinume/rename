@@ -392,7 +392,7 @@ class OrganizeTests(unittest.TestCase):
         self.assertEqual(sum("无效选项，请输入 0–6" in str(call) for call in output.call_args_list), 2)
 
     def test_cli_error_and_interrupt_handling(self):
-        with patch("builtins.input", side_effect=["5", "", "5", str(self.root / "不存在"), "0"]), \
+        with patch("builtins.input", side_effect=["5", "", "5", str(self.root / "不存在"), "y", "0"]), \
                 patch("builtins.print") as output:
             main()
         self.assertEqual(sum("无法执行" in str(call) for call in output.call_args_list), 2)
@@ -404,8 +404,8 @@ class OrganizeTests(unittest.TestCase):
     def test_cli_classify_rename_and_summary_are_separate_choices(self):
         self.workbook([["T1", "品牌", "1-01"]])
         self.folder("T1")
-        answers = ["1", str(self.root), str(self.excel),
-                   "3", str(self.root), str(self.excel), "5", str(self.root), "0"]
+        answers = ["1", str(self.root), str(self.excel), "y",
+                   "3", str(self.root), str(self.excel), "y", "5", str(self.root), "y", "0"]
         with patch("builtins.input", side_effect=answers), patch("builtins.print"):
             main()
         self.assertEqual((self.root / "汇总/1-01/发票.jpg").read_bytes(), b"invoice")
@@ -413,7 +413,7 @@ class OrganizeTests(unittest.TestCase):
     def test_cli_classify_by_batch(self):
         self.workbook([["T1", "第一批"]], headers=["交易参考号", "拨付批次"])
         self.folder("T1")
-        with patch("builtins.input", side_effect=["2", str(self.root), str(self.excel), "0"]), \
+        with patch("builtins.input", side_effect=["2", str(self.root), str(self.excel), " Y ", "0"]), \
                 patch("builtins.print") as output:
             main()
         self.assertEqual((self.root / "第一批/T1/发票.jpg").read_bytes(), b"invoice")
@@ -421,7 +421,12 @@ class OrganizeTests(unittest.TestCase):
 
     def test_cli_rename_pos_images(self):
         (self.root / "小票.jpg").write_bytes(b"pos")
-        with patch("builtins.input", side_effect=["4", str(self.root), "0"]), \
+        with patch("builtins.input", side_effect=["4", str(self.root), "n", "4", str(self.root), "", "0"]), \
+                patch("builtins.print") as output:
+            main()
+        self.assertTrue((self.root / "小票.jpg").is_file())
+        self.assertEqual(sum(call.args == ("已取消。",) for call in output.call_args_list), 2)
+        with patch("builtins.input", side_effect=["4", str(self.root), "y", "0"]), \
                 patch("builtins.print") as output:
             main()
         self.assertEqual((self.root / "POS小票.jpg").read_bytes(), b"pos")
@@ -429,7 +434,7 @@ class OrganizeTests(unittest.TestCase):
 
     def test_cli_corrupt_excel_returns_to_menu(self):
         self.excel.write_bytes(b"not an xlsx file")
-        answers = ["1", str(self.root), str(self.excel), "0"]
+        answers = ["1", str(self.root), str(self.excel), "y", "0"]
         with patch("builtins.input", side_effect=answers), patch("builtins.print") as output:
             main()
         self.assertTrue(any("无法执行" in str(call) for call in output.call_args_list))
