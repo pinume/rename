@@ -66,5 +66,7 @@ def main() -> None:
                     print(f"失败：{message}")
             except (OSError, ValueError, csv.Error) as exc:
                 print(f"无法执行：{exc}")
-    except (KeyboardInterrupt, EOFError):
+    except (KeyboardInterrupt, EOFError) as exc:
         print("\n已退出。")
+        for message in filter(None, str(exc).splitlines()):
+            print(f"失败：{message}")

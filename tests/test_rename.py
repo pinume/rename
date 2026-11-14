@@ -338,7 +338,7 @@ class OrganizeTests(unittest.TestCase):
                      "POS小票_3.jpg", "子目录/POS小票.gif", "子目录/POS小票.jpeg",
                      "子目录/深层/POS小票.tif", "子目录/深层/POS小票.TIFF", "POS小票.png", "._小票.jpg"):
             self.assertIn(name, names)
-        # 按文件名排序：POS小票_02、a、b、发票截图；_2 被目录占用，_3 已存在。
+        # 按文件名排序：POS小票_02、POS小票_3、a、b、发票截图；_2 被目录占用，_3 恰好保持原名。
         self.assertEqual(self.pos_files()["POS小票.jpg"], "内容10".encode())
         self.assertEqual(self.pos_files()["POS小票_4.jpg"], "内容5".encode())
         self.assertEqual(self.pos_files()["POS小票_5.JPG"], "内容6".encode())
@@ -351,21 +351,126 @@ class OrganizeTests(unittest.TestCase):
         self.assertEqual((rerun.success, rerun.failed), (0, []))
         self.assertEqual(set(self.pos_files()), names)
 
-    def test_pos_image_failure_is_reported_and_others_continue(self):
-        for name in ("a.jpg", "b.jpg"):
+    def test_single_old_or_similar_pos_name_becomes_pos(self):
+        for folder, name in (("一", "POS小票_2.jpg"), ("二", "POS小票截图.jpg"), ("三", "POS小票_8.jpg")):
+            (self.root / folder).mkdir()
+            (self.root / folder / name).write_bytes(name.encode())
+        report = rename_pos_images(self.root)
+        self.assertEqual((report.success, report.skipped, report.failed), (3, [], []))
+        self.assertEqual(self.pos_files(), {"一/POS小票.jpg": "POS小票_2.jpg".encode(),
+                                            "二/POS小票.jpg": "POS小票截图.jpg".encode(),
+                                            "三/POS小票.jpg": "POS小票_8.jpg".encode()})
+
+    def test_mixed_old_and_new_names_are_renumbered_without_loss(self):
+        names = ["POS小票.jpg", "POS小票_2.jpg", "POS小票_5.JPG", "a.jpg", "b.jpg",
+                 "c.jpg", "d.jpg", "e.jpg", "f.jpg", "g.jpg", "h.jpg", "pos小票.png"]
+        for name in names:
+            (self.root / name).write_bytes(name.encode())
+        (self.root / "POS小票_4.jpg").write_text("占用", encoding="utf-8")  # 也是待处理图片，不算占用
+        (self.root / "POS小票_3.JPG").mkdir()  # 目录占用 _3
+        report = rename_pos_images(self.root)
+        self.assertEqual(report.failed, [])
+        files = self.pos_files()
+        self.assertEqual(files["POS小票.jpg"], "POS小票.jpg".encode())
+        self.assertEqual(files["POS小票_2.jpg"], "POS小票_2.jpg".encode())
+        self.assertEqual(files["POS小票_4.jpg"], "占用".encode())
+        self.assertEqual(files["POS小票_5.JPG"], "POS小票_5.JPG".encode())
+        self.assertEqual(files["POS小票_6.jpg"], b"a.jpg")
+        self.assertEqual(files["POS小票_13.jpg"], b"h.jpg")
+        self.assertEqual(files["POS小票.png"], "pos小票.png".encode())
+        self.assertEqual(report.success, 9)
+        self.assertEqual(len(files), len(names) + 1)
+        rerun = rename_pos_images(self.root)
+        self.assertEqual((rerun.success, rerun.failed), (0, []))
+        self.assertEqual(self.pos_files(), files)
+
+    def test_pos_staging_failure_restores_directory(self):
+        for name in ("POS小票_2.jpg", "a.jpg", "b.jpg"):
             (self.root / name).write_bytes(name.encode())
         original = Path.rename
 
         def rename(source, target):
-            if source.name == "a.jpg":
+            if source.name == "b.jpg":
                 raise PermissionError("无权限")
             return original(source, target)
 
         with patch.object(Path, "rename", rename):
             report = rename_pos_images(self.root)
-        self.assertEqual((report.success, len(report.failed)), (1, 1))
-        self.assertEqual((self.root / "a.jpg").read_bytes(), b"a.jpg")
-        self.assertEqual((self.root / "POS小票_2.jpg").read_bytes(), b"b.jpg")
+        self.assertEqual((report.success, len(report.failed)), (0, 1))
+        self.assertIn("暂存失败", report.failed[0])
+        self.assertEqual(self.pos_files(), {n: n.encode() for n in ("POS小票_2.jpg", "a.jpg", "b.jpg")})
+
+    def test_pos_final_failure_restores_unfinished_and_reports_path(self):
+        (self.root / "子").mkdir()
+        for name in ("POS小票_2.jpg", "a.jpg", "子/c.jpg"):
+            (self.root / name).write_bytes(name.encode())
+        original = Path.rename
+
+        def rename(source, target):
+            if target.name == "POS小票_2.jpg":
+                raise PermissionError("无权限")
+            return original(source, target)
+
+        with patch.object(Path, "rename", rename):
+            report = rename_pos_images(self.root)
+        # POS小票_2 → POS小票 成功；a 写入 _2 失败并恢复；子目录照常处理。
+        self.assertEqual((report.success, len(report.failed)), (2, 1))
+        self.assertEqual(self.pos_files(), {"POS小票.jpg": "POS小票_2.jpg".encode(),
+                                            "a.jpg": b"a.jpg", "子/POS小票.jpg": "子/c.jpg".encode()})
+
+        (self.root / "POS小票.jpg").rename(self.root / "x.jpg")
+
+        def rename_fail_restore(source, target):
+            if target.name in {"POS小票_2.jpg", "x.jpg"}:
+                raise PermissionError("无权限")
+            return original(source, target)
+
+        with patch.object(Path, "rename", rename_fail_restore):
+            report = rename_pos_images(self.root)
+        self.assertEqual(len(report.failed), 2)
+        self.assertIn("恢复失败，文件现位于", report.failed[1])
+        temp = report.failed[1].split("文件现位于 ")[1].split("：")[0]
+        self.assertEqual(Path(temp).read_bytes(), "POS小票_2.jpg".encode())
+        self.assertEqual(sorted(self.pos_files().values()),
+                         sorted([b"a.jpg", "POS小票_2.jpg".encode(), "子/c.jpg".encode()]))
+
+    def test_pos_interrupt_restores_staged_images_and_reports_path(self):
+        for name in ("a.jpg", "b.jpg", "c.jpg"):
+            (self.root / name).write_bytes(name.encode())
+        original = Path.rename
+
+        def interrupt_after_first_stage(source, target):
+            original(source, target)
+            if source.name == "a.jpg":
+                raise KeyboardInterrupt
+
+        with patch.object(Path, "rename", interrupt_after_first_stage), \
+                self.assertRaises(KeyboardInterrupt) as caught:
+            rename_pos_images(self.root)
+        self.assertEqual(str(caught.exception), "")
+        self.assertEqual(self.pos_files(), {n: n.encode() for n in ("a.jpg", "b.jpg", "c.jpg")})
+
+        def interrupt_and_block_restore(source, target):
+            if target.name == "b.jpg":
+                raise PermissionError("无权限")
+            original(source, target)
+            if target.name == "POS小票.jpg":
+                raise KeyboardInterrupt
+
+        with patch.object(Path, "rename", interrupt_and_block_restore), \
+                patch("builtins.input", side_effect=["4", str(self.root), "y"]), \
+                patch("builtins.print") as output:
+            main()
+        # a 已完成；b 恢复失败留在临时名称并报告；c 恢复原名。
+        files = self.pos_files()
+        self.assertEqual(files.pop("POS小票.jpg"), b"a.jpg")
+        self.assertEqual(files.pop("c.jpg"), b"c.jpg")
+        [(temp, content)] = files.items()
+        self.assertTrue(temp.startswith("POS小票临时_"))
+        self.assertEqual(content, b"b.jpg")
+        output.assert_any_call("\n已退出。")
+        self.assertTrue(any(call.args[0].startswith("失败：") and temp in call.args[0]
+                            for call in output.call_args_list))
 
     def test_short_rows_treat_missing_fields_as_empty(self):
         self.write_csv([["T1", "品牌"]])

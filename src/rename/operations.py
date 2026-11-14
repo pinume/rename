@@ -3,6 +3,7 @@
 import csv
 import os
 import re
+import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -134,36 +135,89 @@ def summarize(root: Path) -> Report:
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif",
                    ".tif", ".tiff", ".heic", ".heif", ".avif"}
 _KEEP_STEMS = {"二合一照片", "发票", "IMEI", "SN图片"}
-_POS_DONE = re.compile(r"POS小票(_([2-9]|[1-9]\d+))?")
+
+def _sort_key(name: str):
+    # 数字按数值排序，使 POS小票_10 排在 _9 之后，重复执行时编号稳定。
+    return [int(p) if i % 2 else p for i, p in enumerate(re.split(r"(\d+)", name))], name
+
+
+def _rename_new(source: Path, target: Path) -> None:
+    # POSIX 的 rename 会静默覆盖已有文件，先检查目标。
+    if os.path.lexists(target):
+        raise FileExistsError(f"目标已存在 {target}")
+    source.rename(target)
+
+
+def _restore(staged: list[tuple[Path, Path]], report: Report) -> None:
+    for source, temp in staged:
+        try:
+            _rename_new(temp, source)
+        except OSError as exc:
+            report.failed.append(f"{source}：恢复失败，文件现位于 {temp}：{exc}")
 
 
 def rename_pos_images(root: Path) -> Report:
     root = _directory(root)
     report = Report()
-    plans = []
     for current, _, files in _walk(root):
-        # 按不区分大小写记录占用，避免在大小写不敏感的文件系统上撞名。
-        occupied = {name.casefold() for name in os.listdir(current)}
-        # 每个扩展名从上次的编号继续找，较小编号已被占用，无需重复检查。
-        next_numbers = {}
-        for name in files:
+        pending = []
+        for name in sorted(files, key=_sort_key):
             source = current / name
             # 隐藏文件（如外接盘上的 ._ 辅助文件）不是真实图片。
             if (name.startswith(".") or source.suffix.lower() not in _IMAGE_SUFFIXES
-                    or source.stem in _KEEP_STEMS
-                    or _POS_DONE.fullmatch(source.stem)):
+                    or source.stem in _KEEP_STEMS):
                 continue
             if source.is_symlink():
                 report.skipped.append(f"{source}：符号链接")
                 continue
-            number = next_numbers.get(source.suffix.casefold(), 1)
-            while (target := f"POS小票{f'_{number}' if number > 1 else ''}{source.suffix}"
-                   ).casefold() in occupied:
-                number += 1
-            next_numbers[source.suffix.casefold()] = number
-            occupied.add(target.casefold())
-            plans.append((source, current / target))
-    return _move(plans, report)
+            pending.append(source)
+        _renumber(current, pending, report)
+    return report
+
+
+def _renumber(current: Path, pending: list[Path], report: Report) -> None:
+    names = {p.name for p in pending}
+    # 待处理图片的旧名称不算占用；其余按不区分大小写记录，避免在大小写不敏感的文件系统上撞名。
+    occupied = {name.casefold() for name in os.listdir(current) if name not in names}
+    next_numbers = {}
+    moves = []
+    for source in pending:
+        number = next_numbers.get(source.suffix.casefold(), 1)
+        while (target := f"POS小票{f'_{number}' if number > 1 else ''}{source.suffix}"
+               ).casefold() in occupied:
+            number += 1
+        next_numbers[source.suffix.casefold()] = number
+        occupied.add(target.casefold())
+        if target != source.name:
+            moves.append((source, current / target))
+    # 先全部移到临时名称，再写入最终名称，防止新旧名称互相占位或覆盖。
+    staged = []
+    try:
+        for source, target in moves:
+            while os.path.lexists(temp := current / f"POS小票临时_{uuid.uuid4().hex}{source.suffix}"):
+                pass
+            # 先登记再改名，改名刚完成就中断时也能找到临时文件。
+            staged.append((source, temp, target))
+            try:
+                _rename_new(source, temp)
+            except OSError as exc:
+                staged.pop()
+                report.failed.append(f"{source} → {target}：暂存失败，跳过该目录：{exc}")
+                _restore([(s, t) for s, t, _ in reversed(staged)], report)
+                return
+        for index, (source, temp, target) in enumerate(staged):
+            try:
+                _rename_new(temp, target)
+                report.success += 1
+            except OSError as exc:
+                report.failed.append(f"{source} → {target}：{exc}")
+                _restore([(s, t) for s, t, _ in staged[index:]], report)
+                return
+    except KeyboardInterrupt:
+        # 中断时恢复仍处于临时名称的图片，并把无法恢复的实际路径随中断带给调用方。
+        interrupted = Report()
+        _restore([(s, t) for s, t, _ in staged if os.path.lexists(t)], interrupted)
+        raise KeyboardInterrupt("\n".join(interrupted.failed)) from None
 
 
 def export_folder_names(root: Path, *, overwrite: bool = False) -> Path:
