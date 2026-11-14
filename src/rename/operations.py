@@ -178,3 +178,35 @@ def export_folder_names(root: Path, *, overwrite: bool = False) -> Path:
         writer.writerow(["文件夹名称"])
         writer.writerows([name] for name in names)
     return output
+
+
+_TREE_NAME = "目录结构.txt"
+_ESCAPES = str.maketrans({"\n": "\\n", "\r": "\\r", "\t": "\\t"})
+
+
+def _tree_lines(folder: Path, prefix: str, skip: str | None = None) -> list[str]:
+    # scandir 出错（如无权限）直接抛出，由调用方在写文件前终止。
+    with os.scandir(folder) as entries:
+        entries = [e for e in entries if not e.is_symlink() and e.name not in {".DS_Store", skip}]
+    dirs = sorted(e.name for e in entries if e.is_dir(follow_symlinks=False))
+    files = sorted(e.name for e in entries if not e.is_dir(follow_symlinks=False))
+    items = [(name, True) for name in dirs] + [(name, False) for name in files]
+    lines = []
+    for index, (name, is_dir) in enumerate(items):
+        last = index == len(items) - 1
+        lines.append(f"{prefix}{'└── ' if last else '├── '}{name.translate(_ESCAPES)}{'/' if is_dir else ''}")
+        if is_dir:
+            lines += _tree_lines(folder / name, prefix + ("    " if last else "│   "))
+    return lines
+
+
+def export_directory_tree(root: Path, *, overwrite: bool = False) -> Path:
+    root = _directory(root)
+    output = root / _TREE_NAME
+    if output.is_symlink():
+        raise ValueError(f"{_TREE_NAME} 是符号链接，不能覆盖")
+    # 先完成扫描再打开输出文件，扫描失败时保留已有文件。
+    lines = [f"{(root.name or str(root)).translate(_ESCAPES)}/", *_tree_lines(root, "", _TREE_NAME)]
+    with output.open("w" if overwrite else "x", encoding="utf-8", newline="\n") as stream:
+        stream.write("\n".join(lines) + "\n")
+    return output

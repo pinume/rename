@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from rename import main
-from rename.operations import (classify, classify_by_batch, export_folder_names,
+from rename.operations import (classify, classify_by_batch, export_directory_tree, export_folder_names,
                                rename_by_number, rename_pos_images, summarize)
 
 
@@ -155,6 +155,74 @@ class OrganizeTests(unittest.TestCase):
             main()
         self.assertIn("T2", output.read_text(encoding="utf-8-sig"))
         self.assertTrue(any("已保存" in str(call) for call in printed.call_args_list))
+
+    def test_directory_tree_lists_nested_entries_and_rules(self):
+        (self.root / "品牌A/001").mkdir(parents=True)
+        (self.root / "品牌A/001/发票.jpg").write_text("x")
+        (self.root / "品牌A/001/POS小票.jpg").write_text("x")
+        (self.root / "品牌A/001/目录结构.txt").write_text("x")
+        (self.root / "空目录").mkdir()
+        (self.root / ".隐藏").write_text("x")
+        (self.root / ".DS_Store").write_text("x")
+        (self.root / "说明.csv").write_text("x")
+        (self.root / "换\n行\t").mkdir()
+        (self.root / "链接").symlink_to(self.base, target_is_directory=True)
+        (self.root / "文件链接").symlink_to(self.csv_path)
+        output = export_directory_tree(self.root)
+        expected = "\n".join([
+            "资料/",
+            "├── 品牌A/",
+            "│   └── 001/",
+            "│       ├── POS小票.jpg",
+            "│       ├── 发票.jpg",
+            "│       └── 目录结构.txt",
+            "├── 换\\n行\\t/",
+            "├── 空目录/",
+            "├── .隐藏",
+            "└── 说明.csv",
+        ]) + "\n"
+        self.assertEqual(output, self.root.resolve() / "目录结构.txt")
+        self.assertEqual(output.read_text(encoding="utf-8"), expected)
+        with self.assertRaises(FileExistsError):
+            export_directory_tree(self.root)
+        (self.root / "新增").mkdir()
+        export_directory_tree(self.root, overwrite=True)
+        self.assertIn("新增/", output.read_text(encoding="utf-8"))
+        self.assertNotIn("├── 目录结构.txt", output.read_text(encoding="utf-8"))
+
+    def test_directory_tree_empty_symlink_output_invalid_root_and_scan_failure(self):
+        output = export_directory_tree(self.root)
+        self.assertEqual(output.read_text(encoding="utf-8"), "资料/\n")
+        with patch("os.scandir", side_effect=PermissionError("无权限")), self.assertRaises(PermissionError):
+            export_directory_tree(self.root, overwrite=True)
+        self.assertEqual(output.read_text(encoding="utf-8"), "资料/\n")
+        output.unlink()
+        sentinel = self.base / "保留.txt"
+        sentinel.write_text("保留")
+        output.symlink_to(sentinel)
+        with self.assertRaises(ValueError):
+            export_directory_tree(self.root, overwrite=True)
+        self.assertEqual(sentinel.read_text(), "保留")
+        with self.assertRaises(FileNotFoundError):
+            export_directory_tree(self.root / "不存在")
+
+    def test_cli_export_directory_tree_confirm_cancel_and_error(self):
+        (self.root / "T1").mkdir()
+        output = self.root / "目录结构.txt"
+        with patch("builtins.input", side_effect=["7", str(self.root), "0"]), patch("builtins.print") as printed:
+            main()
+        self.assertEqual(output.read_text(encoding="utf-8"), "资料/\n└── T1/\n")
+        printed.assert_any_call(f"成功：1，跳过：0，失败：0。已保存：{output.resolve()}")
+        (self.root / "T2").mkdir()
+        with patch("builtins.input", side_effect=["7", str(self.root), "n", "7", str(self.root / "无"), "0"]), \
+                patch("builtins.print") as printed:
+            main()
+        printed.assert_any_call("已取消导出。")
+        self.assertTrue(any("无法执行" in str(call) for call in printed.call_args_list))
+        self.assertNotIn("T2", output.read_text(encoding="utf-8"))
+        with patch("builtins.input", side_effect=["7", str(self.root), "y", "0"]), patch("builtins.print"):
+            main()
+        self.assertIn("T2/", output.read_text(encoding="utf-8"))
 
     def test_missing_headers_and_invalid_root_do_not_move_files(self):
         self.folder("T1")
@@ -368,10 +436,10 @@ class OrganizeTests(unittest.TestCase):
         self.assertTrue((self.root / "T1").exists())
 
     def test_cli_invalid_choice_and_exit(self):
-        with patch("builtins.input", side_effect=["invalid", "7", "0"]), \
+        with patch("builtins.input", side_effect=["invalid", "8", "0"]), \
                 patch("builtins.print") as output:
             main()
-        self.assertEqual(sum("无效选项，请输入 0–6" in str(call) for call in output.call_args_list), 2)
+        self.assertEqual(sum("无效选项，请输入 0–7" in str(call) for call in output.call_args_list), 2)
 
     def test_cli_error_and_interrupt_handling(self):
         with patch("builtins.input", side_effect=["5", "", "5", str(self.root / "不存在"), "y", "0"]), \
