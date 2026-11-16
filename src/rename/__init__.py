@@ -1,17 +1,31 @@
 import csv
 from pathlib import Path
 
-from .operations import (classify, classify_by_batch, export_directory_tree, export_folder_names,
-                         rename_by_number, rename_pos_images, summarize)
+from .operations import (classify, classify_by_batch, export_folder_names,
+                         export_missing_materials, rename_by_number, rename_pos_images,
+                         summarize)
 
 
-def _input_path(prompt: str) -> Path:
+def _input_path(prompt: str, *, optional: bool = False) -> Path | None:
     value = input(prompt).strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
         value = value[1:-1]
     if not value:
+        if optional:
+            return None
         raise ValueError("路径不能为空")
     return Path(value).expanduser()
+
+
+def _export(operation, name: str, root: Path, *args) -> Path | None:
+    output = root / name
+    overwrite = False
+    if output.exists() or output.is_symlink():
+        overwrite = input(f"{name} 已存在，是否覆盖？[y/N]：").strip().lower() == "y"
+        if not overwrite:
+            print("已取消导出。")
+            return None
+    return operation(root, *args, overwrite=overwrite)
 
 
 # 按整理流程排序：先分类，再重命名，最后汇总和导出。
@@ -21,10 +35,9 @@ _MENU = {
     "3": ("重命名为序号", rename_by_number, True),
     "4": ("pos小票fmt", rename_pos_images, False),
     "5": ("汇总资料子文件夹", summarize, False),
-    "6": ("导出文件夹名称", export_folder_names, False),
-    "7": ("导出目录结构", export_directory_tree, False),
+    "6": ("导出名称并核对资料", export_folder_names, False),
 }
-_EXPORT_NAMES = {export_folder_names: "子文件夹名称.csv", export_directory_tree: "目录结构.txt"}
+_CHECK_COLUMNS = {"1": "序号", "2": "交易参考号"}
 
 
 def main() -> None:
@@ -41,17 +54,18 @@ def main() -> None:
             _, operation, needs_csv = _MENU[choice]
             try:
                 root = _input_path("资料目录路径：")
-                if operation in _EXPORT_NAMES:
-                    name = _EXPORT_NAMES[operation]
-                    output = root / name
-                    overwrite = False
-                    if output.exists() or output.is_symlink():
-                        overwrite = input(f"{name} 已存在，是否覆盖？[y/N]：").strip().lower() == "y"
-                        if not overwrite:
-                            print("已取消导出。")
-                            continue
-                    output = operation(root, overwrite=overwrite)
+                if operation is export_folder_names:
+                    if not (output := _export(operation, "子文件夹名称.csv", root)):
+                        continue
                     print(f"成功：1，跳过：0，失败：0。已保存：{output}")
+                    if not (csv_path := _input_path("核对 CSV 文件路径（回车跳过）：", optional=True)):
+                        continue
+                    while (column := input("核对列：1. 序号  2. 交易参考号，请选择：").strip()
+                           ) not in _CHECK_COLUMNS:
+                        print("无效选择，请输入 1 或 2。")
+                    if output := _export(export_missing_materials, "缺少资料.csv", root,
+                                         csv_path, _CHECK_COLUMNS[column]):
+                        print(f"核对完成。已保存：{output}")
                     continue
                 csv_path = _input_path("CSV 文件路径：") if needs_csv else None
                 # 以下操作直接改名或移动且不留记录，执行前确认路径。

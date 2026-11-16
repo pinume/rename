@@ -1,11 +1,14 @@
 import csv
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from rename import main
-from rename.operations import (classify, classify_by_batch, export_directory_tree, export_folder_names,
+from rename.operations import (classify, classify_by_batch, export_folder_names,
+                               export_missing_materials,
                                rename_by_number, rename_pos_images, summarize)
 
 
@@ -141,7 +144,7 @@ class OrganizeTests(unittest.TestCase):
     def test_cli_export_folder_names_confirm_and_cancel(self):
         (self.root / "T1").mkdir()
         output = self.root / "子文件夹名称.csv"
-        with patch("builtins.input", side_effect=["6", str(self.root), "0"]), patch("builtins.print"):
+        with patch("builtins.input", side_effect=["6", str(self.root), "", "0"]), patch("builtins.print"):
             main()
         self.assertEqual(output.read_bytes().decode("utf-8-sig"), "文件夹名称\r\nT1\r\n")
         (self.root / "T2").mkdir()
@@ -150,79 +153,153 @@ class OrganizeTests(unittest.TestCase):
             main()
         printed.assert_any_call("已取消导出。")
         self.assertNotIn("T2", output.read_text(encoding="utf-8-sig"))
-        with patch("builtins.input", side_effect=["6", str(self.root), " Y ", "0"]), \
+        with patch("builtins.input", side_effect=["6", str(self.root), " Y ", "", "0"]), \
                 patch("builtins.print") as printed:
             main()
         self.assertIn("T2", output.read_text(encoding="utf-8-sig"))
         self.assertTrue(any("已保存" in str(call) for call in printed.call_args_list))
 
-    def test_directory_tree_lists_nested_entries_and_rules(self):
-        (self.root / "品牌A/001").mkdir(parents=True)
-        (self.root / "品牌A/001/发票.jpg").write_text("x")
-        (self.root / "品牌A/001/POS小票.jpg").write_text("x")
-        (self.root / "品牌A/001/目录结构.txt").write_text("x")
-        (self.root / "空目录").mkdir()
-        (self.root / ".隐藏").write_text("x")
-        (self.root / ".DS_Store").write_text("x")
-        (self.root / "说明.csv").write_text("x")
-        (self.root / "换\n行\t").mkdir()
-        (self.root / "链接").symlink_to(self.base, target_is_directory=True)
-        (self.root / "文件链接").symlink_to(self.csv_path)
-        output = export_directory_tree(self.root)
-        expected = "\n".join([
-            "资料/",
-            "├── 品牌A/",
-            "│   └── 001/",
-            "│       ├── POS小票.jpg",
-            "│       ├── 发票.jpg",
-            "│       └── 目录结构.txt",
-            "├── 换\\n行\\t/",
-            "├── 空目录/",
-            "├── .隐藏",
-            "└── 说明.csv",
-        ]) + "\n"
-        self.assertEqual(output, self.root.resolve() / "目录结构.txt")
-        self.assertEqual(output.read_text(encoding="utf-8"), expected)
+    def materials(self, name, *files):
+        folder = self.root / name
+        folder.mkdir()
+        for file in files:
+            (folder / file).parent.mkdir(parents=True, exist_ok=True)
+            (folder / file).write_bytes(b"x")
+        return folder
+
+    def check(self, rows, column="交易参考号", headers=("交易参考号", "序号", "备注")):
+        self.write_csv(rows, headers=list(headers))
+        output = export_missing_materials(self.root, self.csv_path, column, overwrite=True)
+        with output.open(encoding="utf-8-sig", newline="") as stream:
+            return list(csv.reader(stream))
+
+    def test_missing_materials_image_rules(self):
+        first, second = ["发票.jpg", "POS小票.png", "SN图片.JPG"], ["二合一照片.jpg", "发票.jpg", "IMEI.heic", "POS小票.jpg"]
+        self.materials("第一套", *first, "POS小票.jpeg", "说明.txt", ".隐藏.jpg", "子/其他.jpg")
+        self.materials("第二套", *second)
+        self.materials("只有两张", "发票.jpg", "POS小票.jpg")
+        self.materials("混用", *first, "IMEI.jpg")
+        self.materials("多出", *first, "其他照片.jpg")
+        self.materials("近似", "发票.jpg", "POS小票_2.jpg", "SN图片.jpg")
+        self.materials("空")
+        self.materials("非图片", "发票.pdf")
+        深层 = self.materials("深层", "发票.jpg", "SN图片.jpg", "子/POS小票.jpg")
+        (深层.parent / "外部.jpg").write_bytes(b"x")
+        链接 = self.materials("链接", "发票.jpg", "SN图片.jpg")
+        (链接 / "POS小票.jpg").symlink_to(深层.parent / "外部.jpg")
+        names = ["不存在", "第一套", "第二套", "只有两张", "混用", "多出", "近似", "空", "非图片", "深层", "链接"]
+        rows = self.check([[n, str(i), ""] for i, n in enumerate(names)])
+        missing = "第一套：缺少 POS小票、SN图片、发票；第二套：缺少 IMEI、POS小票、二合一照片、发票"
+        two = "第一套：缺少 SN图片；第二套：缺少 IMEI、二合一照片"
+        lack_pos = "第一套：缺少 POS小票；第二套：缺少 IMEI、POS小票、二合一照片，多出 SN图片"
+        self.assertEqual(rows, [["交易参考号", "序号", "备注", "缺少原因"],
+                                ["不存在", "0", "", "缺少文件夹"],
+                                ["只有两张", "3", "", two],
+                                ["混用", "4", "", "第一套：多出 IMEI；第二套：缺少 二合一照片，多出 SN图片"],
+                                ["多出", "5", "", "第一套：多出 其他照片；第二套：缺少 IMEI、二合一照片，多出 SN图片、其他照片"],
+                                ["近似", "6", "", "第一套：缺少 POS小票，多出 POS小票_2；第二套：缺少 IMEI、POS小票、二合一照片，多出 POS小票_2、SN图片"],
+                                ["空", "7", "", missing], ["非图片", "8", "", missing],
+                                ["深层", "9", "", lack_pos], ["链接", "10", "", lack_pos]])
+
+    def test_missing_materials_csv_format_and_matching(self):
+        self.materials("007", "发票.jpg")
+        self.materials(".隐藏")
+        self.materials("T1", "发票.jpg", "POS小票.jpg", "SN图片.jpg")
+        headers = ("交易参考号", " 序号 ", "缺少原因", "缺少原因_2")
+        rows = [["T1", " 007 ", "a,b", "多\n行"], ["", "", "空参考号", ""], ["T2", "007"],
+                ["T2", "007", "重复", "", "", ""], ["T1", ""], ["T3", ".隐藏", "", ""]]
+        result = self.check(rows, column="序号", headers=headers)
+        reason = "第一套：缺少 POS小票、SN图片；第二套：缺少 IMEI、POS小票、二合一照片"
+        hidden = "第一套：缺少 POS小票、SN图片、发票；第二套：缺少 IMEI、POS小票、二合一照片、发票"
+        self.assertEqual(result, [[*headers, "缺少原因_3"],
+                                  ["T1", " 007 ", "a,b", "多\n行", reason],
+                                  ["T2", "007", "", "", reason],
+                                  ["T2", "007", "重复", "", reason],
+                                  ["T3", ".隐藏", "", "", hidden]])
+        self.assertEqual(self.check([["T1", "1", ""]]), [["交易参考号", "序号", "备注", "缺少原因"]])
+        self.assertTrue((self.root / "缺少资料.csv").read_bytes().startswith(b"\xef\xbb\xbf"))
+        with patch("rename.operations._material_problem", wraps=__import__(
+                "rename.operations", fromlist=["x"])._material_problem) as checked:
+            self.check([["T1", "1", ""], ["T1", "2", ""]])
+        self.assertEqual(checked.call_count, 1)
+
+    def test_missing_materials_errors_keep_existing_output(self):
+        self.materials("T1")
+        self.write_csv([["T1", "1"]], headers=["交易参考号", "序号"])
+        source = self.csv_path.read_bytes()
+        output = export_missing_materials(self.root, self.csv_path, "交易参考号")
+        old = output.read_bytes()
         with self.assertRaises(FileExistsError):
-            export_directory_tree(self.root)
-        (self.root / "新增").mkdir()
-        export_directory_tree(self.root, overwrite=True)
-        self.assertIn("新增/", output.read_text(encoding="utf-8"))
-        self.assertNotIn("├── 目录结构.txt", output.read_text(encoding="utf-8"))
-
-    def test_directory_tree_empty_symlink_output_invalid_root_and_scan_failure(self):
-        output = export_directory_tree(self.root)
-        self.assertEqual(output.read_text(encoding="utf-8"), "资料/\n")
-        with patch("os.scandir", side_effect=PermissionError("无权限")), self.assertRaises(PermissionError):
-            export_directory_tree(self.root, overwrite=True)
-        self.assertEqual(output.read_text(encoding="utf-8"), "资料/\n")
-        output.unlink()
-        sentinel = self.base / "保留.txt"
-        sentinel.write_text("保留")
-        output.symlink_to(sentinel)
+            export_missing_materials(self.root, self.csv_path, "交易参考号")
         with self.assertRaises(ValueError):
-            export_directory_tree(self.root, overwrite=True)
-        self.assertEqual(sentinel.read_text(), "保留")
-        with self.assertRaises(FileNotFoundError):
-            export_directory_tree(self.root / "不存在")
+            export_missing_materials(self.root, self.csv_path, "品牌品类", overwrite=True)
+        with self.assertRaises(ValueError):
+            export_missing_materials(self.root, output, "交易参考号", overwrite=True)
+        self.write_csv([["T1", "1", "多余"]], headers=["交易参考号", "序号"])
+        with self.assertRaisesRegex(ValueError, "超出表头"):
+            export_missing_materials(self.root, self.csv_path, "交易参考号", overwrite=True)
+        self.write_csv([["T1"]], headers=["交易参考号", "交易参考号"])
+        with self.assertRaisesRegex(ValueError, "表头"):
+            export_missing_materials(self.root, self.csv_path, "交易参考号", overwrite=True)
+        self.csv_path.write_bytes(b"\xff\xfe")
+        with self.assertRaises(UnicodeDecodeError):
+            export_missing_materials(self.root, self.csv_path, "交易参考号", overwrite=True)
+        self.write_csv([["T1", "1"]], headers=["交易参考号", "序号"])
+        with patch("pathlib.Path.iterdir", side_effect=PermissionError("无权限")), \
+                self.assertRaises(PermissionError):
+            export_missing_materials(self.root, self.csv_path, "交易参考号", overwrite=True)
+        with patch("os.replace", side_effect=PermissionError("无权限")), \
+                self.assertRaises(PermissionError):
+            export_missing_materials(self.root, self.csv_path, "交易参考号", overwrite=True)
+        self.assertEqual(output.read_bytes(), old)
+        output.unlink()
+        output.symlink_to(self.csv_path)
+        with self.assertRaisesRegex(ValueError, "符号链接"):
+            export_missing_materials(self.root, self.csv_path, "交易参考号", overwrite=True)
+        self.assertEqual(self.csv_path.read_bytes(), source)
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["T1", "缺少资料.csv"])
 
-    def test_cli_export_directory_tree_confirm_cancel_and_error(self):
-        (self.root / "T1").mkdir()
-        output = self.root / "目录结构.txt"
-        with patch("builtins.input", side_effect=["7", str(self.root), "0"]), patch("builtins.print") as printed:
+    def test_cli_missing_materials_check(self):
+        self.materials("T1")
+        self.write_csv([["T1", "1"]], headers=["交易参考号", "序号"])
+        output = self.root / "缺少资料.csv"
+        answers = ["6", str(self.root), str(self.csv_path), "3", "2",
+                   "6", str(self.root), "y", f"'{self.csv_path}'", "1", "n",
+                   "6", str(self.root), "n", "0"]
+        with patch("builtins.input", side_effect=answers), patch("builtins.print") as printed:
             main()
-        self.assertEqual(output.read_text(encoding="utf-8"), "资料/\n└── T1/\n")
-        printed.assert_any_call(f"成功：1，跳过：0，失败：0。已保存：{output.resolve()}")
-        (self.root / "T2").mkdir()
-        with patch("builtins.input", side_effect=["7", str(self.root), "n", "7", str(self.root / "无"), "0"]), \
+        printed.assert_any_call("无效选择，请输入 1 或 2。")
+        self.assertEqual(sum(c.args == ("已取消导出。",) for c in printed.call_args_list), 2)
+        self.assertTrue(any("核对完成" in str(c) for c in printed.call_args_list))
+        self.assertIn("第一套：缺少", output.read_text(encoding="utf-8-sig"))
+        self.csv_path.write_text("错误\n")
+        with patch("builtins.input", side_effect=["6", str(self.root), "y", str(self.csv_path), "1", "y", "0"]), \
                 patch("builtins.print") as printed:
             main()
-        printed.assert_any_call("已取消导出。")
-        self.assertTrue(any("无法执行" in str(call) for call in printed.call_args_list))
-        self.assertNotIn("T2", output.read_text(encoding="utf-8"))
-        with patch("builtins.input", side_effect=["7", str(self.root), "y", "0"]), patch("builtins.print"):
-            main()
-        self.assertIn("T2/", output.read_text(encoding="utf-8"))
+        self.assertTrue(any("无法执行" in str(c) for c in printed.call_args_list))
+        self.assertIn("第一套：缺少", output.read_text(encoding="utf-8-sig"))
+
+    def test_overwrite_export_failure_keeps_old_output_and_no_temp_file(self):
+        output = export_folder_names(self.root, overwrite=True)
+        output.chmod(0o640)
+        old = output.read_bytes()
+        # 非 UTF-8 文件夹名在写入时编码失败；替换失败用 patch 模拟。
+        bad = self.root / os.fsdecode(b"\xff")
+        bad.mkdir()
+        with self.assertRaises(UnicodeEncodeError):
+            export_folder_names(self.root, overwrite=True)
+        bad.rmdir()
+        (self.root / "新增").mkdir()
+        with patch("os.replace", side_effect=PermissionError("无权限")), \
+                self.assertRaises(PermissionError):
+            export_folder_names(self.root, overwrite=True)
+        self.assertEqual(output.read_bytes(), old)
+        self.assertEqual({p.name for p in self.root.iterdir()}, {output.name, "新增"})
+        export_folder_names(self.root, overwrite=True)
+        self.assertIn("新增", output.read_text(encoding="utf-8-sig"))
+        self.assertEqual(output.stat().st_mode & 0o777, 0o640)
+        (self.root / "新增").rmdir()
+        output.unlink()
 
     def test_missing_headers_and_invalid_root_do_not_move_files(self):
         self.folder("T1")
@@ -310,6 +387,31 @@ class OrganizeTests(unittest.TestCase):
         self.assertEqual((self.root / "T1/发票.jpg").read_bytes(), b"invoice")
         self.assertEqual((self.root / "T1/SN图片.png").read_bytes(), b"serial")
         self.assertEqual((self.root / "第一批/T2/发票.jpg").read_bytes(), b"invoice")
+
+    def test_classify_skips_plans_whose_target_is_another_source(self):
+        # (台账行, 应跳过的来源)；独立的 D 总是正常移动。
+        cases = {
+            "直接依赖": ([["A", "B"], ["B", "品牌"]], {"A", "B"}),
+            "反向排序": ([["B", "A"], ["A", "品牌"]], {"A", "B"}),
+            "链式依赖": ([["A", "B"], ["B", "C"], ["C", "E"]], {"A", "B", "C"}),
+            "循环依赖": ([["A", "B"], ["B", "A"]], {"A", "B"}),
+        }
+        for operation, column in ((classify, "品牌品类"), (classify_by_batch, "拨付批次")):
+            for label, (rows, linked) in cases.items():
+                with self.subTest(operation=operation.__name__, case=label):
+                    for child in self.root.iterdir():
+                        shutil.rmtree(child)
+                    self.write_csv(rows + [["D", "品牌"]], headers=["交易参考号", column])
+                    for name in linked | {"D"}:
+                        self.folder(name)
+                    report = operation(self.root, self.csv_path)
+                    self.assertEqual((report.success, len(report.skipped), report.failed),
+                                     (1, len(linked), []))
+                    for name in linked:
+                        self.assertEqual((self.root / name / "发票.jpg").read_bytes(), b"invoice")
+                        self.assertEqual(sorted(p.name for p in (self.root / name).iterdir()),
+                                         ["SN图片.png", "发票.jpg"])
+                    self.assertEqual((self.root / "品牌/D/发票.jpg").read_bytes(), b"invoice")
 
     def pos_files(self):
         return {p.relative_to(self.root).as_posix(): p.read_bytes()
@@ -541,10 +643,13 @@ class OrganizeTests(unittest.TestCase):
         self.assertTrue((self.root / "T1").exists())
 
     def test_cli_invalid_choice_and_exit(self):
-        with patch("builtins.input", side_effect=["invalid", "8", "0"]), \
+        with patch("builtins.input", side_effect=["invalid", "7", "0"]), \
                 patch("builtins.print") as output:
             main()
-        self.assertEqual(sum("无效选项，请输入 0–7" in str(call) for call in output.call_args_list), 2)
+        self.assertEqual(sum("无效选项，请输入 0–6" in str(call) for call in output.call_args_list), 2)
+        menu = output.call_args_list[0].args[0]
+        self.assertIn("6. 导出名称并核对资料", menu)
+        self.assertNotIn("7.", menu)
 
     def test_cli_error_and_interrupt_handling(self):
         with patch("builtins.input", side_effect=["5", "", "5", str(self.root / "不存在"), "y", "0"]), \
@@ -586,6 +691,45 @@ class OrganizeTests(unittest.TestCase):
             main()
         self.assertEqual((self.root / "POS小票.jpg").read_bytes(), b"pos")
         output.assert_any_call("成功：1，跳过：0，失败：0。")
+
+    def test_pos_scan_failure_returns_accumulated_report(self):
+        for name in ("a/小票.jpg", "b/小票.jpg", "c/小票.jpg"):
+            (self.root / name).parent.mkdir()
+            (self.root / name).write_bytes(name.encode())
+        blocked = (self.root / "b").resolve()
+        scandir, listdir = os.scandir, os.listdir
+
+        def fail_scandir(path="."):
+            if Path(path) == blocked:
+                raise PermissionError(13, "无权限", str(path))
+            return scandir(path)
+
+        def fail_listdir(path="."):
+            if Path(path) == blocked:
+                raise PermissionError(13, "无权限", str(path))
+            return listdir(path)
+
+        for label, target, fake in (("扫描", "os.scandir", fail_scandir),
+                                    ("列目录", "os.listdir", fail_listdir)):
+            with self.subTest(label):
+                for name in ("a", "b", "c"):
+                    for path in (self.root / name).iterdir():
+                        path.rename(path.with_name("小票.jpg"))
+                with patch(target, fake):
+                    report = rename_pos_images(self.root)
+                self.assertEqual(report.success, 1)
+                self.assertEqual(len(report.failed), 1)
+                self.assertIn(str(blocked), report.failed[0])
+                self.assertEqual(self.pos_files(), {"a/POS小票.jpg": "a/小票.jpg".encode(),
+                                                    "b/小票.jpg": "b/小票.jpg".encode(),
+                                                    "c/小票.jpg": "c/小票.jpg".encode()})
+        with patch("os.listdir", fail_listdir), patch("builtins.print") as output, \
+                patch("builtins.input", side_effect=["4", str(self.root), "y", "0"]):
+            for path in (self.root / "a").iterdir():
+                path.rename(path.with_name("小票.jpg"))
+            main()
+        output.assert_any_call("成功：1，跳过：0，失败：1。")
+        self.assertTrue(any(str(blocked) in str(call) for call in output.call_args_list))
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,8 +3,11 @@
 import csv
 import os
 import re
+import stat
+import tempfile
 import uuid
 from collections import Counter, defaultdict
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -121,6 +124,18 @@ def _organize(folders: list[Path], mapping: dict[str, set[str]], root: Path,
                 continue
             target = root / name / source.name if classify else source.with_name(name)
             plans.append((source, target))
+    if classify:
+        # 目标父目录也是另一项来源时，结果取决于执行顺序，关联的来源全部跳过。
+        sources = {source for source, _ in plans}
+        linked = defaultdict(set)
+        for source, target in plans:
+            if target.parent in sources and target.parent != source:
+                linked[source].add(target.parent)
+                linked[target.parent].add(source)
+        for source in sorted(linked):
+            others = "、".join(str(p) for p in sorted(linked[source]))
+            report.skipped.append(f"{source}：与 {others} 的分类移动相互影响")
+        plans = [plan for plan in plans if plan[0] not in linked]
     return _move(plans, report)
 
 
@@ -159,19 +174,24 @@ def _restore(staged: list[tuple[Path, Path]], report: Report) -> None:
 def rename_pos_images(root: Path) -> Report:
     root = _directory(root)
     report = Report()
-    for current, _, files in _walk(root):
-        pending = []
-        for name in sorted(files, key=_sort_key):
-            source = current / name
-            # 隐藏文件（如外接盘上的 ._ 辅助文件）不是真实图片。
-            if (name.startswith(".") or source.suffix.lower() not in _IMAGE_SUFFIXES
-                    or source.stem in _KEEP_STEMS):
-                continue
-            if source.is_symlink():
-                report.skipped.append(f"{source}：符号链接")
-                continue
-            pending.append(source)
-        _renumber(current, pending, report)
+    current = root
+    try:
+        for current, _, files in _walk(root):
+            pending = []
+            for name in sorted(files, key=_sort_key):
+                source = current / name
+                # 隐藏文件（如外接盘上的 ._ 辅助文件）不是真实图片。
+                if (name.startswith(".") or source.suffix.lower() not in _IMAGE_SUFFIXES
+                        or source.stem in _KEEP_STEMS):
+                    continue
+                if source.is_symlink():
+                    report.skipped.append(f"{source}：符号链接")
+                    continue
+                pending.append(source)
+            _renumber(current, pending, report)
+    except OSError as exc:
+        # 扫描中止时返回已累计的结果，菜单仍能显示已完成的数量。
+        report.failed.append(f"{exc.filename or current}：扫描失败，停止处理：{exc}")
     return report
 
 
@@ -227,40 +247,90 @@ def export_folder_names(root: Path, *, overwrite: bool = False) -> Path:
         raise ValueError("子文件夹名称.csv 是符号链接，不能覆盖")
     names = sorted(p.name for p in root.iterdir() if p.is_dir() and not p.is_symlink())
     # utf-8-sig 让 Excel 正确识别中文；newline="" 交给 csv 处理名称中的换行。
-    with output.open("w" if overwrite else "x", encoding="utf-8-sig", newline="") as stream:
+    with _open_output(output, overwrite, "utf-8-sig") as stream:
         writer = csv.writer(stream)
         writer.writerow(["文件夹名称"])
         writer.writerows([name] for name in names)
     return output
 
 
-_TREE_NAME = "目录结构.txt"
-_ESCAPES = str.maketrans({"\n": "\\n", "\r": "\\r", "\t": "\\t"})
+@contextmanager
+def _open_output(output: Path, overwrite: bool, encoding: str):
+    if not overwrite:
+        with output.open("x", encoding=encoding, newline="") as stream:
+            yield stream
+        return
+    # 覆盖时先写同目录临时文件，完整关闭后再替换，失败时保留原输出。
+    fd, temp = tempfile.mkstemp(dir=output.parent, prefix=f".{output.name}.")
+    try:
+        with open(fd, "w", encoding=encoding, newline="") as stream:
+            # mkstemp 创建的文件权限为 0600，沿用原输出的权限。
+            with suppress(FileNotFoundError):
+                os.chmod(temp, stat.S_IMODE(os.stat(output).st_mode))
+            yield stream
+        os.replace(temp, output)
+    except BaseException:
+        os.unlink(temp)
+        raise
 
 
-def _tree_lines(folder: Path, prefix: str, skip: str | None = None) -> list[str]:
-    # scandir 出错（如无权限）直接抛出，由调用方在写文件前终止。
-    with os.scandir(folder) as entries:
-        entries = [e for e in entries if not e.is_symlink() and e.name not in {".DS_Store", skip}]
-    dirs = sorted(e.name for e in entries if e.is_dir(follow_symlinks=False))
-    files = sorted(e.name for e in entries if not e.is_dir(follow_symlinks=False))
-    items = [(name, True) for name in dirs] + [(name, False) for name in files]
-    lines = []
-    for index, (name, is_dir) in enumerate(items):
-        last = index == len(items) - 1
-        lines.append(f"{prefix}{'└── ' if last else '├── '}{name.translate(_ESCAPES)}{'/' if is_dir else ''}")
-        if is_dir:
-            lines += _tree_lines(folder / name, prefix + ("    " if last else "│   "))
-    return lines
+_MATERIAL_SETS = {"第一套": {"发票", "POS小票", "SN图片"},
+                  "第二套": {"二合一照片", "发票", "IMEI", "POS小票"}}
 
 
-def export_directory_tree(root: Path, *, overwrite: bool = False) -> Path:
+def _material_problem(folder: Path | None) -> str:
+    if folder is None:
+        return "缺少文件夹"
+    stems = {p.stem for p in folder.iterdir()
+             if not p.name.startswith(".") and p.suffix.lower() in _IMAGE_SUFFIXES
+             and not p.is_symlink() and p.is_file()}
+    if stems in _MATERIAL_SETS.values():
+        return ""
+    parts = []
+    for name, expected in _MATERIAL_SETS.items():
+        diff = [f"{label} {'、'.join(sorted(names))}"
+                for label, names in (("缺少", expected - stems), ("多出", stems - expected)) if names]
+        parts.append(f"{name}：{'，'.join(diff)}")
+    return "；".join(parts)
+
+
+def export_missing_materials(root: Path, csv_path: Path, column: str, *,
+                             overwrite: bool = False) -> Path:
+    if column not in ("序号", "交易参考号"):
+        raise ValueError(f"不支持的核对列：{column}")
     root = _directory(root)
-    output = root / _TREE_NAME
+    output = root / "缺少资料.csv"
     if output.is_symlink():
-        raise ValueError(f"{_TREE_NAME} 是符号链接，不能覆盖")
-    # 先完成扫描再打开输出文件，扫描失败时保留已有文件。
-    lines = [f"{(root.name or str(root)).translate(_ESCAPES)}/", *_tree_lines(root, "", _TREE_NAME)]
-    with output.open("w" if overwrite else "x", encoding="utf-8", newline="\n") as stream:
-        stream.write("\n".join(lines) + "\n")
+        raise ValueError("缺少资料.csv 是符号链接，不能覆盖")
+    if output.exists() and os.path.samefile(csv_path, output):
+        raise ValueError("核对 CSV 与结果文件相同，不能覆盖")
+    with csv_path.open(encoding="utf-8-sig", newline="") as stream:
+        rows = csv.reader(stream, strict=True)
+        for header in rows:
+            names = [v.strip() for v in header]
+            if names.count(column) == 1:
+                break
+        else:
+            raise ValueError(f"CSV 未找到包含唯一“{column}”列的表头")
+        index, width = names.index(column), len(header)
+        records = []
+        for row in rows:
+            if any(v.strip() for v in row[width:]):
+                raise ValueError(f"CSV 第 {rows.line_num} 行字段数超出表头")
+            row = row[:width] + [""] * (width - len(row))
+            if key := row[index].strip():
+                records.append((key, row))
+    folders = {p.name: p for p in root.iterdir() if p.is_dir() and not p.is_symlink()}
+    problems = {}
+    for key, _ in records:
+        if key not in problems:
+            problems[key] = _material_problem(folders.get(key))
+    reason, number = "缺少原因", 1
+    while reason in names:
+        number += 1
+        reason = f"缺少原因_{number}"
+    with _open_output(output, overwrite, "utf-8-sig") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(header + [reason])
+        writer.writerows(row + [problems[key]] for key, row in records if problems[key])
     return output
