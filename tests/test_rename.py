@@ -259,6 +259,21 @@ class OrganizeTests(unittest.TestCase):
         self.assertEqual(self.csv_path.read_bytes(), source)
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["T1", "缺少资料.csv"])
 
+    def test_missing_materials_stat_error_keeps_existing_output(self):
+        self.materials("T1", "发票.jpg", "POS小票.jpg", "SN图片.jpg")
+        self.write_csv([["T1", "1"], ["T2", "2"]], headers=["交易参考号", "序号"])
+        output = export_missing_materials(self.root, self.csv_path, "交易参考号")
+        old = output.read_bytes()
+        lstat = Path.lstat
+        for broken in ("POS小票.jpg", "T1"):
+            def failing(path, broken=broken):
+                if path.name == broken:
+                    raise PermissionError("无权限")
+                return lstat(path)
+            with patch("pathlib.Path.lstat", failing), self.assertRaises(PermissionError):
+                export_missing_materials(self.root, self.csv_path, "交易参考号", overwrite=True)
+            self.assertEqual(output.read_bytes(), old)
+
     def test_cli_missing_materials_check(self):
         self.materials("T1")
         self.write_csv([["T1", "1"]], headers=["交易参考号", "序号"])

@@ -283,7 +283,8 @@ def _material_problem(folder: Path | None) -> str:
         return "缺少文件夹"
     stems = {p.stem for p in folder.iterdir()
              if not p.name.startswith(".") and p.suffix.lower() in _IMAGE_SUFFIXES
-             and not p.is_symlink() and p.is_file()}
+             # is_file() 会把状态读取错误当作 False，用 lstat 让错误上抛，避免误报缺少。
+             and stat.S_ISREG(p.lstat().st_mode)}
     if stems in _MATERIAL_SETS.values():
         return ""
     parts = []
@@ -320,7 +321,7 @@ def export_missing_materials(root: Path, csv_path: Path, column: str, *,
             row = row[:width] + [""] * (width - len(row))
             if key := row[index].strip():
                 records.append((key, row))
-    folders = {p.name: p for p in root.iterdir() if p.is_dir() and not p.is_symlink()}
+    folders = {p.name: p for p in root.iterdir() if stat.S_ISDIR(p.lstat().st_mode)}
     problems = {}
     for key, _ in records:
         if key not in problems:
