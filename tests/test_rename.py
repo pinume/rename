@@ -181,25 +181,27 @@ class OrganizeTests(unittest.TestCase):
         self.materials("混用", *first, "IMEI.jpg")
         self.materials("多出", *first, "其他照片.jpg")
         self.materials("近似", "发票.jpg", "POS小票_2.jpg", "SN图片.jpg")
+        self.materials("缺IMEI", "二合一照片.jpg", "发票.jpg", "POS小票.jpg")
         self.materials("空")
         self.materials("非图片", "发票.pdf")
         深层 = self.materials("深层", "发票.jpg", "SN图片.jpg", "子/POS小票.jpg")
         (深层.parent / "外部.jpg").write_bytes(b"x")
         链接 = self.materials("链接", "发票.jpg", "SN图片.jpg")
         (链接 / "POS小票.jpg").symlink_to(深层.parent / "外部.jpg")
-        names = ["不存在", "第一套", "第二套", "只有两张", "混用", "多出", "近似", "空", "非图片", "深层", "链接"]
+        names = ["不存在", "第一套", "第二套", "只有两张", "混用", "多出", "近似", "空", "非图片", "深层", "链接", "缺IMEI"]
         rows = self.check([[n, str(i), ""] for i, n in enumerate(names)])
-        missing = "第一套：缺少 POS小票、SN图片、发票；第二套：缺少 IMEI、POS小票、二合一照片、发票"
-        two = "第一套：缺少 SN图片；第二套：缺少 IMEI、二合一照片"
-        lack_pos = "第一套：缺少 POS小票；第二套：缺少 IMEI、POS小票、二合一照片，多出 SN图片"
+        missing = "第一套：缺少 POS小票、SN图片、发票"
+        two = "第一套：缺少 SN图片"
+        lack_pos = "第一套：缺少 POS小票"
         self.assertEqual(rows, [["交易参考号", "序号", "备注", "缺少原因"],
                                 ["不存在", "0", "", "缺少文件夹"],
                                 ["只有两张", "3", "", two],
-                                ["混用", "4", "", "第一套：多出 IMEI；第二套：缺少 二合一照片，多出 SN图片"],
-                                ["多出", "5", "", "第一套：多出 其他照片；第二套：缺少 IMEI、二合一照片，多出 SN图片、其他照片"],
-                                ["近似", "6", "", "第一套：缺少 POS小票，多出 POS小票_2；第二套：缺少 IMEI、POS小票、二合一照片，多出 POS小票_2、SN图片"],
+                                ["混用", "4", "", "第二套：缺少 二合一照片，多出 SN图片"],
+                                ["多出", "5", "", "第一套：多出 其他照片"],
+                                ["近似", "6", "", "第一套：缺少 POS小票，多出 POS小票_2"],
                                 ["空", "7", "", missing], ["非图片", "8", "", missing],
-                                ["深层", "9", "", lack_pos], ["链接", "10", "", lack_pos]])
+                                ["深层", "9", "", lack_pos], ["链接", "10", "", lack_pos],
+                                ["缺IMEI", "11", "", "第二套：缺少 IMEI"]])
 
     def test_missing_materials_csv_format_and_matching(self):
         self.materials("007", "发票.jpg")
@@ -209,8 +211,8 @@ class OrganizeTests(unittest.TestCase):
         rows = [["T1", " 007 ", "a,b", "多\n行"], ["", "", "空参考号", ""], ["T2", "007"],
                 ["T2", "007", "重复", "", "", ""], ["T1", ""], ["T3", ".隐藏", "", ""]]
         result = self.check(rows, column="序号", headers=headers)
-        reason = "第一套：缺少 POS小票、SN图片；第二套：缺少 IMEI、POS小票、二合一照片"
-        hidden = "第一套：缺少 POS小票、SN图片、发票；第二套：缺少 IMEI、POS小票、二合一照片、发票"
+        reason = "第一套：缺少 POS小票、SN图片"
+        hidden = "第一套：缺少 POS小票、SN图片、发票"
         self.assertEqual(result, [[*headers, "缺少原因_3"],
                                   ["T1", " 007 ", "a,b", "多\n行", reason],
                                   ["T2", "007", "", "", reason],
