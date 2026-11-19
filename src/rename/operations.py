@@ -268,7 +268,11 @@ def _open_output(output: Path, overwrite: bool, encoding: str):
             with suppress(FileNotFoundError):
                 os.chmod(temp, stat.S_IMODE(os.stat(output).st_mode))
             yield stream
-        os.replace(temp, output)
+        try:
+            os.replace(temp, output)
+        except PermissionError as exc:
+            # Windows 上目标被 Excel 等程序打开时无法替换。
+            raise PermissionError(f"无法覆盖 {output}，请关闭正在打开它的程序（如 Excel）后重试") from exc
     except BaseException:
         os.unlink(temp)
         raise

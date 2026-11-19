@@ -251,7 +251,7 @@ class OrganizeTests(unittest.TestCase):
                 self.assertRaises(PermissionError):
             export_missing_materials(self.root, self.csv_path, "交易参考号", overwrite=True)
         with patch("os.replace", side_effect=PermissionError("无权限")), \
-                self.assertRaises(PermissionError):
+                self.assertRaisesRegex(PermissionError, "请关闭正在打开它的程序"):
             export_missing_materials(self.root, self.csv_path, "交易参考号", overwrite=True)
         self.assertEqual(output.read_bytes(), old)
         output.unlink()
@@ -308,7 +308,7 @@ class OrganizeTests(unittest.TestCase):
         bad.rmdir()
         (self.root / "新增").mkdir()
         with patch("os.replace", side_effect=PermissionError("无权限")), \
-                self.assertRaises(PermissionError):
+                self.assertRaisesRegex(PermissionError, "请关闭正在打开它的程序"):
             export_folder_names(self.root, overwrite=True)
         self.assertEqual(output.read_bytes(), old)
         self.assertEqual({p.name for p in self.root.iterdir()}, {output.name, "新增"})
