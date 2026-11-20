@@ -28,13 +28,13 @@ def _export(operation, name: str, root: Path, *args) -> Path | None:
     return operation(root, *args, overwrite=overwrite)
 
 
-# 按整理流程排序：先分类，再重命名，最后汇总和导出。
+# 按整理流程排序：先分类，再重命名，再把资料夹移到输入目录，最后导出。
 _MENU = {
     "1": ("按品牌品类分类", classify, True),
     "2": ("按拨付批次分类", classify_by_batch, True),
     "3": ("重命名为序号", rename_by_number, True),
     "4": ("pos小票fmt", rename_pos_images, False),
-    "5": ("汇总资料子文件夹", summarize, False),
+    "5": ("资料夹移到输入目录", summarize, False),
     "6": ("导出名称并核对资料", export_folder_names, False),
 }
 _CHECK_COLUMNS = {"1": "序号", "2": "交易参考号"}
@@ -68,12 +68,17 @@ def main() -> None:
                         print(f"核对完成。已保存：{output}")
                     continue
                 csv_path = _input_path("CSV 文件路径：") if needs_csv else None
+                if operation is summarize:
+                    print(f"将 {root}/分类目录/资料夹 整夹移到 {root}/资料夹，并删除其中的空目录。"
+                          "整理后层级已改变，不要直接重跑，否则会把资料夹内的子目录再次移出。")
                 # 以下操作直接改名或移动且不留记录，执行前确认路径。
                 if input(f"将直接修改 {root}，继续？[y/N]：").strip().lower() != "y":
                     print("已取消。")
                     continue
                 report = operation(root, csv_path) if needs_csv else operation(root)
-                print(f"成功：{report.success}，跳过：{len(report.skipped)}，失败：{len(report.failed)}。")
+                removed = f"删除空目录：{report.removed}，" if operation is summarize else ""
+                print(f"成功：{report.success}，{removed}跳过：{len(report.skipped)}，"
+                      f"失败：{len(report.failed)}。")
                 for message in report.skipped:
                     print(f"跳过：{message}")
                 for message in report.failed:

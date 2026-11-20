@@ -17,6 +17,7 @@ class Report:
     success: int = 0
     skipped: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    removed: int = 0
 
 
 def _directory(path: Path) -> Path:
@@ -50,14 +51,13 @@ def _target_name(name: str) -> bool:
     return bool(name) and name not in {".", ".."} and not any(c in name for c in "/\\\0:")
 
 
-def _walk(root: Path, exclude_summary: bool = False):
+def _walk(root: Path):
     def onerror(error):
         raise error
 
     for current, dirs, files in os.walk(root, onerror=onerror, followlinks=False):
         current = Path(current)
-        dirs[:] = sorted(d for d in dirs if not (current / d).is_symlink()
-                         and not (exclude_summary and current == root and d == "汇总"))
+        dirs[:] = sorted(d for d in dirs if not (current / d).is_symlink())
         yield current, dirs, sorted(f for f in files if f != ".DS_Store")
 
 
@@ -139,12 +139,42 @@ def _organize(folders: list[Path], mapping: dict[str, set[str]], root: Path,
     return _move(plans, report)
 
 
+def _remove_empty(folders: list[Path], contents: dict, gone: set[Path], report: Report) -> None:
+    """只对首次扫描时没有文件、链接且子目录都已移走的目录调用 rmdir。"""
+    for folder in folders:
+        entries, subdirs = contents[folder]
+        if entries or not gone.issuperset(subdirs):
+            continue
+        try:
+            folder.rmdir()
+        except OSError as exc:
+            report.failed.append(f"删除空目录 {folder}：{exc}")
+            continue
+        gone.add(folder)
+        report.removed += 1
+
+
 def summarize(root: Path) -> Report:
+    def onerror(error):
+        raise error
+
     root = _directory(root)
-    plans = [(current, root / "汇总" / current.name)
-             for current, dirs, files in _walk(root, exclude_summary=True)
-             if current != root and not dirs and files]
-    return _move(plans, Report())
+    # 一次完整扫描记录实际目录项（含隐藏文件、.DS_Store、符号链接），之后不再枚举；
+    # 扫描失败时目录保持原状。
+    contents = {}
+    for current, dirs, files in os.walk(root, onerror=onerror, followlinks=False):
+        current = Path(current)
+        links = [d for d in dirs if (current / d).is_symlink()]
+        contents[current] = (files + links, sorted(current / d for d in dirs if d not in links))
+    report, gone = Report(), set()
+    # os.walk 自顶向下，反转后由深到浅；输入目录保留。
+    _remove_empty([p for p in reversed(contents) if p != root], contents, gone, report)
+    folders = [folder for category in contents[root][1] if category not in gone
+               for folder in contents[category][1] if folder not in gone]
+    _move([(folder, root / folder.name) for folder in folders], report)
+    gone.update(folder for folder in folders if not os.path.lexists(folder))
+    _remove_empty(sorted({folder.parent for folder in folders}), contents, gone, report)
+    return report
 
 
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif",

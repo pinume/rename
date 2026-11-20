@@ -42,14 +42,14 @@ class OrganizeTests(unittest.TestCase):
         original = {p.relative_to(self.root).as_posix(): p.read_bytes()
                     for p in self.root.rglob("*") if p.is_file()}
         self.assertEqual(classify(self.root, self.csv_path).success, 2)
-        self.assertEqual(summarize(self.root).success, 2)
-        self.assertTrue((self.root / "海尔电冰箱").is_dir())
-        self.assertEqual(summarize(self.root).success, 0)
         self.assertEqual(rename_by_number(self.root, self.csv_path).success, 2)
+        report = summarize(self.root)
+        self.assertEqual((report.success, report.removed), (2, 1))
+        self.assertFalse((self.root / "海尔电冰箱").exists())
         for path, data in original.items():
             reference, filename = path.split("/")
             number = {"T1": "1-01", "T2": "1-02"}[reference]
-            self.assertEqual((self.root / "汇总" / number / filename).read_bytes(), data)
+            self.assertEqual((self.root / number / filename).read_bytes(), data)
 
     def test_unmatched_empty_conflicting_and_unsafe_values_are_preserved(self):
         self.write_csv([["empty", None, ""], ["conflict", "甲", "1"],
@@ -93,15 +93,83 @@ class OrganizeTests(unittest.TestCase):
         self.folder("品牌/T1")
         self.assertEqual(classify(self.root, self.csv_path).success, 0)
 
-    def test_summary_skips_all_duplicate_leaf_names(self):
+    def test_summary_clears_empty_root_target_then_moves_whole_folder(self):
+        (self.root / "T001").mkdir()
+        (self.root / "品牌甲/T001/补充资料").mkdir(parents=True)
+        (self.root / "品牌甲/T001/补充资料/照片.jpg").write_bytes(b"photo")
+        report = summarize(self.root)
+        self.assertEqual((report.success, report.removed, report.skipped, report.failed),
+                         (1, 2, [], []))
+        self.assertEqual((self.root / "T001/补充资料/照片.jpg").read_bytes(), b"photo")
+        self.assertEqual([p.name for p in self.root.iterdir()], ["T001"])
+
+    def test_summary_skips_duplicate_names_and_occupied_targets(self):
         self.folder("品牌甲/T1")
         self.folder("品牌乙/T1")
-        self.folder("汇总/T2")
+        self.folder("T2")
+        self.folder("品牌甲/T2")
+        (self.root / "T3").write_text("file")
+        self.folder("品牌乙/T3")
+        (self.root / "T4").symlink_to(self.base, target_is_directory=True)
+        self.folder("品牌乙/T4")
+        self.folder("品牌乙/T5")
         report = summarize(self.root)
-        self.assertEqual(report.success, 0)
-        self.assertEqual(len(report.skipped), 2)
-        self.assertTrue((self.root / "品牌甲/T1").is_dir())
-        self.assertFalse((self.root / "汇总/汇总").exists())
+        self.assertEqual((report.success, report.removed, report.failed), (1, 0, []))
+        self.assertEqual(len(report.skipped), 5)
+        for path in ("品牌甲/T1", "品牌乙/T1", "品牌甲/T2", "品牌乙/T3", "品牌乙/T4"):
+            self.assertEqual((self.root / path / "发票.jpg").read_bytes(), b"invoice")
+        self.assertEqual((self.root / "T5/发票.jpg").read_bytes(), b"invoice")
+        self.assertEqual((self.root / "T3").read_text(), "file")
+
+    def test_summary_keeps_hidden_files_links_and_loose_files(self):
+        outside = self.base / "外部"
+        (outside / "空").mkdir(parents=True)
+        (self.root / "品牌/T1/a/b/c").mkdir(parents=True)
+        (self.root / "品牌/T1/发票.jpg").write_bytes(b"invoice")
+        (self.root / "品牌/T2/.隐藏").mkdir(parents=True)
+        (self.root / "品牌/T2/.隐藏/.DS_Store").write_bytes(b"ds")
+        (self.root / "品牌/T3").mkdir()
+        (self.root / "品牌/T3/链接").symlink_to(outside, target_is_directory=True)
+        (self.root / "品牌/散落.txt").write_text("loose")
+        report = summarize(self.root)
+        self.assertEqual((report.success, report.removed, report.failed), (3, 3, []))
+        self.assertFalse((self.root / "T1/a").exists())
+        self.assertEqual((self.root / "T2/.隐藏/.DS_Store").read_bytes(), b"ds")
+        self.assertTrue((self.root / "T3/链接").is_symlink())
+        self.assertTrue((outside / "空").is_dir())
+        self.assertEqual((self.root / "品牌/散落.txt").read_text(), "loose")
+
+    def test_summary_scan_failure_changes_nothing_and_item_failures_are_reported(self):
+        (self.root / "空").mkdir()
+        self.folder("品牌/T1")
+        with patch("rename.operations.os.walk", side_effect=OSError("扫描失败")), \
+                self.assertRaises(OSError):
+            summarize(self.root)
+        self.assertTrue((self.root / "空").is_dir())
+        with patch.object(Path, "rename", side_effect=PermissionError("无权限")):
+            report = summarize(self.root)
+        self.assertEqual((report.success, report.removed), (0, 1))
+        self.assertIn(str(self.root / "品牌/T1"), report.failed[0])
+        self.assertTrue((self.root / "品牌/T1/发票.jpg").is_file())
+
+    def test_summary_uses_first_scan_only_and_reports_cleanup_after_later_errors(self):
+        (self.root / "空").mkdir()
+        self.folder("品牌/T1")
+        with patch.object(Path, "iterdir", side_effect=OSError("枚举失败")):
+            report = summarize(self.root)
+        self.assertEqual((report.success, report.removed, report.failed), (1, 2, []))
+        self.assertEqual((self.root / "T1/发票.jpg").read_bytes(), b"invoice")
+
+    @unittest.skipIf(os.name != "posix" or os.geteuid() == 0, "需要非 root 的 POSIX 权限")
+    def test_summary_read_only_category_reports_only_the_move_failure(self):
+        self.folder("品牌/T1")
+        (self.root / "品牌").chmod(0o555)
+        self.addCleanup((self.root / "品牌").chmod, 0o755)
+        report = summarize(self.root)
+        self.assertEqual((report.success, report.removed, report.skipped), (0, 0, []))
+        self.assertEqual(len(report.failed), 1)
+        self.assertTrue(report.failed[0].startswith(str(self.root / "品牌/T1") + " → "))
+        self.assertEqual((self.root / "品牌/T1/发票.jpg").read_bytes(), b"invoice")
 
     def test_folder_names_csv_lists_first_level_folders_only(self):
         names = ["乙 品牌", "a,b", 'say "hi"', "多\n行", ".隐藏", "甲"]
@@ -682,10 +750,13 @@ class OrganizeTests(unittest.TestCase):
         self.write_csv([["T1", "品牌", "1-01"]])
         self.folder("T1")
         answers = ["1", str(self.root), str(self.csv_path), "y",
-                   "3", str(self.root), str(self.csv_path), "y", "5", str(self.root), "y", "0"]
-        with patch("builtins.input", side_effect=answers), patch("builtins.print"):
+                   "3", str(self.root), str(self.csv_path), "y", "5", str(self.root), "n",
+                   "5", str(self.root), "y", "0"]
+        with patch("builtins.input", side_effect=answers), patch("builtins.print") as output:
             main()
-        self.assertEqual((self.root / "汇总/1-01/发票.jpg").read_bytes(), b"invoice")
+        self.assertEqual((self.root / "1-01/发票.jpg").read_bytes(), b"invoice")
+        output.assert_any_call("已取消。")
+        output.assert_any_call("成功：1，删除空目录：1，跳过：0，失败：0。")
 
     def test_cli_classify_by_batch(self):
         self.write_csv([["T1", "第一批"]], headers=["交易参考号", "拨付批次"])
