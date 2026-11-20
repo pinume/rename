@@ -258,18 +258,18 @@ class OrganizeTests(unittest.TestCase):
         (链接 / "POS小票.jpg").symlink_to(深层.parent / "外部.jpg")
         names = ["不存在", "第一套", "第二套", "只有两张", "混用", "多出", "近似", "空", "非图片", "深层", "链接", "缺IMEI"]
         rows = self.check([[n, str(i), ""] for i, n in enumerate(names)])
-        missing = "第一套：缺少 POS小票、SN图片、发票"
-        two = "第一套：缺少 SN图片"
-        lack_pos = "第一套：缺少 POS小票"
+        missing = "缺少 POS小票、SN图片、发票"
+        two = "缺少 SN图片"
+        lack_pos = "缺少 POS小票"
         self.assertEqual(rows, [["交易参考号", "序号", "备注", "缺少原因"],
                                 ["不存在", "0", "", "缺少文件夹"],
                                 ["只有两张", "3", "", two],
-                                ["混用", "4", "", "第二套：缺少 二合一照片，多出 SN图片"],
-                                ["多出", "5", "", "第一套：多出 其他照片"],
-                                ["近似", "6", "", "第一套：缺少 POS小票，多出 POS小票_2"],
+                                ["混用", "4", "", "缺少 二合一照片，多出 SN图片"],
+                                ["多出", "5", "", "多出 其他照片"],
+                                ["近似", "6", "", "缺少 POS小票，多出 POS小票_2"],
                                 ["空", "7", "", missing], ["非图片", "8", "", missing],
                                 ["深层", "9", "", lack_pos], ["链接", "10", "", lack_pos],
-                                ["缺IMEI", "11", "", "第二套：缺少 IMEI"]])
+                                ["缺IMEI", "11", "", "缺少 IMEI"]])
 
     def test_missing_materials_csv_format_and_matching(self):
         self.materials("007", "发票.jpg")
@@ -279,8 +279,8 @@ class OrganizeTests(unittest.TestCase):
         rows = [["T1", " 007 ", "a,b", "多\n行"], ["", "", "空参考号", ""], ["T2", "007"],
                 ["T2", "007", "重复", "", "", ""], ["T1", ""], ["T3", ".隐藏", "", ""]]
         result = self.check(rows, column="序号", headers=headers)
-        reason = "第一套：缺少 POS小票、SN图片"
-        hidden = "第一套：缺少 POS小票、SN图片、发票"
+        reason = "缺少 POS小票、SN图片"
+        hidden = "缺少 POS小票、SN图片、发票"
         self.assertEqual(result, [[*headers, "缺少原因_3"],
                                   ["T1", " 007 ", "a,b", "多\n行", reason],
                                   ["T2", "007", "", "", reason],
@@ -356,13 +356,13 @@ class OrganizeTests(unittest.TestCase):
         printed.assert_any_call("无效选择，请输入 1 或 2。")
         self.assertEqual(sum(c.args == ("已取消导出。",) for c in printed.call_args_list), 2)
         self.assertTrue(any("核对完成" in str(c) for c in printed.call_args_list))
-        self.assertIn("第一套：缺少", output.read_text(encoding="utf-8-sig"))
+        self.assertIn("T1,1,缺少 POS小票、SN图片、发票", output.read_text(encoding="utf-8-sig"))
         self.csv_path.write_text("错误\n")
         with patch("builtins.input", side_effect=["6", str(self.root), "y", str(self.csv_path), "1", "y", "0"]), \
                 patch("builtins.print") as printed:
             main()
         self.assertTrue(any("无法执行" in str(c) for c in printed.call_args_list))
-        self.assertIn("第一套：缺少", output.read_text(encoding="utf-8-sig"))
+        self.assertIn("T1,1,缺少 POS小票、SN图片、发票", output.read_text(encoding="utf-8-sig"))
 
     def test_overwrite_export_failure_keeps_old_output_and_no_temp_file(self):
         output = export_folder_names(self.root, overwrite=True)

@@ -325,7 +325,7 @@ def _material_problem(folder: Path | None) -> str:
     expected = _MATERIAL_SETS[name]
     diff = [f"{label} {'、'.join(sorted(names))}"
             for label, names in (("缺少", expected - stems), ("多出", stems - expected)) if names]
-    return f"{name}：{'，'.join(diff)}"
+    return "，".join(diff)
 
 
 def export_missing_materials(root: Path, csv_path: Path, column: str, *,

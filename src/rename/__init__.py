@@ -34,7 +34,7 @@ _MENU = {
     "2": ("按拨付批次分类", classify_by_batch, True),
     "3": ("重命名为序号", rename_by_number, True),
     "4": ("pos小票fmt", rename_pos_images, False),
-    "5": ("资料夹移到输入目录", summarize, False),
+    "5": ("汇总资料夹并清理空目录", summarize, False),
     "6": ("导出名称并核对资料", export_folder_names, False),
 }
 _CHECK_COLUMNS = {"1": "序号", "2": "交易参考号"}
