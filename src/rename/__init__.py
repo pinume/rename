@@ -28,16 +28,15 @@ def _export(operation, name: str, root: Path, *args) -> Path | None:
     return operation(root, *args, overwrite=overwrite)
 
 
-# 按整理流程排序：先分类，再重命名，再把资料夹移到输入目录，最后导出。
+# 按整理流程排序：先分类，再重命名（含改回参考号），再把资料夹移到输入目录，最后导出。
 _MENU = {
     "1": ("按品牌品类分类", classify, True),
     "2": ("按拨付批次分类", classify_by_batch, True),
     "3": ("重命名为序号", rename_by_number, True),
-    "4": ("pos小票fmt", rename_pos_images, False),
-    "5": ("汇总资料夹并清理空目录", summarize, False),
-    "6": ("导出名称并核对资料", export_folder_names, False),
-    # 序号改回交易参考号，排在最后以保留原有编号。
-    "7": ("序号改回交易参考号", rename_to_reference, True),
+    "4": ("重命名为参考号", rename_to_reference, True),
+    "5": ("pos小票fmt", rename_pos_images, False),
+    "6": ("汇总文件夹", summarize, False),
+    "7": ("核对资料", export_folder_names, False),
 }
 _CHECK_COLUMNS = {"1": "序号", "2": "交易参考号"}
 

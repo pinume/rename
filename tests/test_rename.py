@@ -213,16 +213,16 @@ class OrganizeTests(unittest.TestCase):
     def test_cli_export_folder_names_confirm_and_cancel(self):
         (self.root / "T1").mkdir()
         output = self.root / "子文件夹名称.csv"
-        with patch("builtins.input", side_effect=["6", str(self.root), "", "0"]), patch("builtins.print"):
+        with patch("builtins.input", side_effect=["7", str(self.root), "", "0"]), patch("builtins.print"):
             main()
         self.assertEqual(output.read_bytes().decode("utf-8-sig"), "文件夹名称\r\nT1\r\n")
         (self.root / "T2").mkdir()
-        with patch("builtins.input", side_effect=["6", str(self.root), "n", "0"]), \
+        with patch("builtins.input", side_effect=["7", str(self.root), "n", "0"]), \
                 patch("builtins.print") as printed:
             main()
         printed.assert_any_call("已取消导出。")
         self.assertNotIn("T2", output.read_text(encoding="utf-8-sig"))
-        with patch("builtins.input", side_effect=["6", str(self.root), " Y ", "", "0"]), \
+        with patch("builtins.input", side_effect=["7", str(self.root), " Y ", "", "0"]), \
                 patch("builtins.print") as printed:
             main()
         self.assertIn("T2", output.read_text(encoding="utf-8-sig"))
@@ -349,9 +349,9 @@ class OrganizeTests(unittest.TestCase):
         self.materials("T1")
         self.write_csv([["T1", "1"]], headers=["交易参考号", "序号"])
         output = self.root / "缺少资料.csv"
-        answers = ["6", str(self.root), str(self.csv_path), "3", "2",
-                   "6", str(self.root), "y", f"'{self.csv_path}'", "1", "n",
-                   "6", str(self.root), "n", "0"]
+        answers = ["7", str(self.root), str(self.csv_path), "3", "2",
+                   "7", str(self.root), "y", f"'{self.csv_path}'", "1", "n",
+                   "7", str(self.root), "n", "0"]
         with patch("builtins.input", side_effect=answers), patch("builtins.print") as printed:
             main()
         printed.assert_any_call("无效选择，请输入 1 或 2。")
@@ -359,7 +359,7 @@ class OrganizeTests(unittest.TestCase):
         self.assertTrue(any("核对完成" in str(c) for c in printed.call_args_list))
         self.assertIn("T1,1,缺少 POS小票、SN图片、发票", output.read_text(encoding="utf-8-sig"))
         self.csv_path.write_text("错误\n")
-        with patch("builtins.input", side_effect=["6", str(self.root), "y", str(self.csv_path), "1", "y", "0"]), \
+        with patch("builtins.input", side_effect=["7", str(self.root), "y", str(self.csv_path), "1", "y", "0"]), \
                 patch("builtins.print") as printed:
             main()
         self.assertTrue(any("无法执行" in str(c) for c in printed.call_args_list))
@@ -646,7 +646,7 @@ class OrganizeTests(unittest.TestCase):
                 raise KeyboardInterrupt
 
         with patch.object(Path, "rename", interrupt_and_block_restore), \
-                patch("builtins.input", side_effect=["4", str(self.root), "y"]), \
+                patch("builtins.input", side_effect=["5", str(self.root), "y"]), \
                 patch("builtins.print") as output:
             main()
         # a 已完成；b 恢复失败留在临时名称并报告；c 恢复原名。
@@ -734,11 +734,11 @@ class OrganizeTests(unittest.TestCase):
             main()
         self.assertEqual(sum("无效选项，请输入 0–7" in str(call) for call in output.call_args_list), 2)
         menu = output.call_args_list[0].args[0]
-        self.assertIn("7. 序号改回交易参考号", menu)
+        self.assertIn("4. 重命名为参考号", menu)
         self.assertNotIn("8.", menu)
 
     def test_cli_error_and_interrupt_handling(self):
-        with patch("builtins.input", side_effect=["5", "", "5", str(self.root / "不存在"), "y", "0"]), \
+        with patch("builtins.input", side_effect=["6", "", "6", str(self.root / "不存在"), "y", "0"]), \
                 patch("builtins.print") as output:
             main()
         self.assertEqual(sum("无法执行" in str(call) for call in output.call_args_list), 2)
@@ -751,8 +751,8 @@ class OrganizeTests(unittest.TestCase):
         self.write_csv([["T1", "品牌", "1-01"]])
         self.folder("T1")
         answers = ["1", str(self.root), str(self.csv_path), "y",
-                   "3", str(self.root), str(self.csv_path), "y", "5", str(self.root), "n",
-                   "5", str(self.root), "y", "0"]
+                   "3", str(self.root), str(self.csv_path), "y", "6", str(self.root), "n",
+                   "6", str(self.root), "y", "0"]
         with patch("builtins.input", side_effect=answers), patch("builtins.print") as output:
             main()
         self.assertEqual((self.root / "1-01/发票.jpg").read_bytes(), b"invoice")
@@ -779,7 +779,7 @@ class OrganizeTests(unittest.TestCase):
     def test_cli_rename_to_reference(self):
         self.write_csv([["T1", "品牌", "1-01"]])
         self.folder("1-01")
-        with patch("builtins.input", side_effect=["7", str(self.root), str(self.csv_path), "y", "0"]), \
+        with patch("builtins.input", side_effect=["4", str(self.root), str(self.csv_path), "y", "0"]), \
                 patch("builtins.print") as output:
             main()
         self.assertEqual((self.root / "T1/发票.jpg").read_bytes(), b"invoice")
@@ -796,12 +796,12 @@ class OrganizeTests(unittest.TestCase):
 
     def test_cli_rename_pos_images(self):
         (self.root / "小票.jpg").write_bytes(b"pos")
-        with patch("builtins.input", side_effect=["4", str(self.root), "n", "4", str(self.root), "", "0"]), \
+        with patch("builtins.input", side_effect=["5", str(self.root), "n", "5", str(self.root), "", "0"]), \
                 patch("builtins.print") as output:
             main()
         self.assertTrue((self.root / "小票.jpg").is_file())
         self.assertEqual(sum(call.args == ("已取消。",) for call in output.call_args_list), 2)
-        with patch("builtins.input", side_effect=["4", str(self.root), "y", "0"]), \
+        with patch("builtins.input", side_effect=["5", str(self.root), "y", "0"]), \
                 patch("builtins.print") as output:
             main()
         self.assertEqual((self.root / "POS小票.jpg").read_bytes(), b"pos")
@@ -839,7 +839,7 @@ class OrganizeTests(unittest.TestCase):
                                                     "b/小票.jpg": "b/小票.jpg".encode(),
                                                     "c/小票.jpg": "c/小票.jpg".encode()})
         with patch("os.listdir", fail_listdir), patch("builtins.print") as output, \
-                patch("builtins.input", side_effect=["4", str(self.root), "y", "0"]):
+                patch("builtins.input", side_effect=["5", str(self.root), "y", "0"]):
             for path in (self.root / "a").iterdir():
                 path.rename(path.with_name("小票.jpg"))
             main()
