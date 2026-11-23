@@ -3,7 +3,7 @@ from pathlib import Path
 
 from .operations import (classify, classify_by_batch, export_folder_names,
                          export_missing_materials, rename_by_number, rename_pos_images,
-                         summarize)
+                         rename_to_reference, summarize)
 
 
 def _input_path(prompt: str, *, optional: bool = False) -> Path | None:
@@ -36,6 +36,8 @@ _MENU = {
     "4": ("pos小票fmt", rename_pos_images, False),
     "5": ("汇总资料夹并清理空目录", summarize, False),
     "6": ("导出名称并核对资料", export_folder_names, False),
+    # 序号改回交易参考号，排在最后以保留原有编号。
+    "7": ("序号改回交易参考号", rename_to_reference, True),
 }
 _CHECK_COLUMNS = {"1": "序号", "2": "交易参考号"}
 

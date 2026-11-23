@@ -9,7 +9,8 @@ from unittest.mock import patch
 from rename import main
 from rename.operations import (classify, classify_by_batch, export_folder_names,
                                export_missing_materials,
-                               rename_by_number, rename_pos_images, summarize)
+                               rename_by_number, rename_pos_images,
+                               rename_to_reference, summarize)
 
 
 class OrganizeTests(unittest.TestCase):
@@ -728,13 +729,13 @@ class OrganizeTests(unittest.TestCase):
         self.assertTrue((self.root / "T1").exists())
 
     def test_cli_invalid_choice_and_exit(self):
-        with patch("builtins.input", side_effect=["invalid", "7", "0"]), \
+        with patch("builtins.input", side_effect=["invalid", "8", "0"]), \
                 patch("builtins.print") as output:
             main()
-        self.assertEqual(sum("无效选项，请输入 0–6" in str(call) for call in output.call_args_list), 2)
+        self.assertEqual(sum("无效选项，请输入 0–7" in str(call) for call in output.call_args_list), 2)
         menu = output.call_args_list[0].args[0]
-        self.assertIn("6. 导出名称并核对资料", menu)
-        self.assertNotIn("7.", menu)
+        self.assertIn("7. 序号改回交易参考号", menu)
+        self.assertNotIn("8.", menu)
 
     def test_cli_error_and_interrupt_handling(self):
         with patch("builtins.input", side_effect=["5", "", "5", str(self.root / "不存在"), "y", "0"]), \
@@ -757,6 +758,32 @@ class OrganizeTests(unittest.TestCase):
         self.assertEqual((self.root / "1-01/发票.jpg").read_bytes(), b"invoice")
         output.assert_any_call("已取消。")
         output.assert_any_call("成功：1，删除空目录：1，跳过：0，失败：0。")
+
+    def test_rename_to_reference_requires_one_to_one(self):
+        self.write_csv([["T1", "", "001"], ["T1", "", "001"], ["T2", "", "002"], ["T3", "", "002"],
+                       ["T4", "", "004"], ["T4", "", "005"], ["T6", "", "006"], ["T6", "", ""],
+                       ["a/b", "", "007"], ["T8", "", "008"]])
+        for name in ("品牌/001", "002", "004", "005", "006", "007", "008", "009", "T8"):
+            self.folder(name)
+        report = rename_to_reference(self.root, self.csv_path)
+        self.assertEqual(report.success, 1)
+        self.assertEqual((self.root / "品牌/T1/发票.jpg").read_bytes(), b"invoice")
+        skipped = "\n".join(report.skipped)
+        self.assertEqual(skipped.count("不是一一对应"), 4)
+        self.assertIn("未匹配序号", skipped)
+        self.assertIn("目标名称无效", skipped)
+        self.assertIn("目标已存在", skipped)
+        for name in ("002", "004", "005", "006", "007", "008", "009"):
+            self.assertTrue((self.root / name / "发票.jpg").is_file())
+
+    def test_cli_rename_to_reference(self):
+        self.write_csv([["T1", "品牌", "1-01"]])
+        self.folder("1-01")
+        with patch("builtins.input", side_effect=["7", str(self.root), str(self.csv_path), "y", "0"]), \
+                patch("builtins.print") as output:
+            main()
+        self.assertEqual((self.root / "T1/发票.jpg").read_bytes(), b"invoice")
+        output.assert_any_call("成功：1，跳过：0，失败：0。")
 
     def test_cli_classify_by_batch(self):
         self.write_csv([["T1", "第一批"]], headers=["交易参考号", "拨付批次"])

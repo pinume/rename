@@ -99,10 +99,38 @@ def classify_by_batch(root: Path, csv_path: Path) -> Report:
 def rename_by_number(root: Path, csv_path: Path) -> Report:
     root = _directory(root)
     mapping = _mapping(csv_path, "序号")
+    return _organize(_nested_folders(root), mapping, root, classify=False)
+
+
+def _nested_folders(root: Path) -> list[Path]:
     folders = [current / d for current, dirs, _ in _walk(root) for d in dirs]
     # 先处理深层目录，避免上层重命名后使尚未处理的路径失效。
     folders.sort(key=lambda p: len(p.parts), reverse=True)
-    return _organize(folders, mapping, root, classify=False)
+    return folders
+
+
+def rename_to_reference(root: Path, csv_path: Path) -> Report:
+    root = _directory(root)
+    numbers = _mapping(csv_path, "序号")
+    references = defaultdict(set)
+    for reference, values in numbers.items():
+        for number in values - {""}:
+            references[number].add(reference)
+    report, plans = Report(), []
+    for source in _nested_folders(root):
+        matched = references.get(source.name)
+        if not matched:
+            report.skipped.append(f"{source}：未匹配序号")
+            continue
+        reference = next(iter(matched))
+        # 一一对应：序号只对应一个参考号，该参考号也只对应这个序号（不含空序号）。
+        if len(matched) > 1 or numbers[reference] != {source.name}:
+            report.skipped.append(f"{source}：序号与交易参考号不是一一对应")
+        elif not _target_name(reference):
+            report.skipped.append(f"{source}：目标名称无效 {reference!r}")
+        else:
+            plans.append((source, source.with_name(reference)))
+    return _move(plans, report)
 
 
 def _organize(folders: list[Path], mapping: dict[str, set[str]], root: Path,
